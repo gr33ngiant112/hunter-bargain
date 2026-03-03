@@ -1,5 +1,7 @@
 """On-demand price check endpoints."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -9,10 +11,11 @@ from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services.searcher import run_price_check
 
 router = APIRouter(prefix="/prices", tags=["prices"])
+DbSession = Annotated[Session, Depends(get_db)]
 
 
 @router.post("/check/{item_id}", response_model=PriceCheckResult)
-def check_price(item_id: int, db: Session = Depends(get_db)) -> PriceCheckResult:
+def check_price(item_id: int, db: DbSession) -> PriceCheckResult:
     """Trigger an on-demand price check for a specific item."""
     item = db.query(Item).filter(Item.id == item_id).first()
     if not item:
@@ -21,7 +24,7 @@ def check_price(item_id: int, db: Session = Depends(get_db)) -> PriceCheckResult
 
 
 @router.post("/check-all", response_model=list[PriceCheckResult])
-def check_all_prices(db: Session = Depends(get_db)) -> list[PriceCheckResult]:
+def check_all_prices(db: DbSession) -> list[PriceCheckResult]:
     """Trigger an on-demand price check for ALL tracked items."""
     items = db.query(Item).all()
     return [run_price_check(item=item, db=db) for item in items]

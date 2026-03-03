@@ -1,6 +1,6 @@
 """Tests for the price check API endpoints."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from hunter_bargain.schemas import PriceCheckResult
 

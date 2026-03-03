@@ -143,10 +143,7 @@ def _has_accessory_extension(result: SearchResult) -> bool:
     """Return True if the result's extensions metadata indicates an accessory."""
     if not result.extensions:
         return False
-    for ext in result.extensions:
-        if ext.lower() in _ACCESSORY_EXTENSIONS:
-            return True
-    return False
+    return any(ext.lower() in _ACCESSORY_EXTENSIONS for ext in result.extensions)
 
 
 def _is_relevant(result: SearchResult, item_name: str, target_price: float | None = None) -> bool:
@@ -176,11 +173,7 @@ def _is_relevant(result: SearchResult, item_name: str, target_price: float | Non
         return False
 
     name_lower = item_name.lower()
-    for term in _ACCESSORY_TERMS:
-        if term in title_tokens and term not in name_lower:
-            return False
-
-    return True
+    return all(not (term in title_tokens and term not in name_lower) for term in _ACCESSORY_TERMS)
 
 
 def _filter_relevant(results: list[SearchResult], item: Item) -> list[SearchResult]:

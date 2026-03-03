@@ -4,8 +4,8 @@ Wires up routes, database initialization, and the background scheduler.
 """
 
 import logging
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -39,7 +39,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="hunter-bargain",
-    description="Price tracker and discovery bot — finds the lowest price across multiple search engines.",
+    description=(
+        "Price tracker and discovery bot — finds the lowest price across multiple search engines."
+    ),
     version="0.1.0",
     lifespan=lifespan,
 )

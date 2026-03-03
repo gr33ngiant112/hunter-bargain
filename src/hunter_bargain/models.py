@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import datetime as dt
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -10,8 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from hunter_bargain.db import Base
 
 
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
 class Item(Base):
@@ -27,13 +27,13 @@ class Item(Base):
     target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Email address to notify for this item
     notify_email: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
 
     # Relationship to price records
-    price_records: Mapped[list["PriceRecord"]] = relationship(
+    price_records: Mapped[list[PriceRecord]] = relationship(
         back_populates="item",
         cascade="all, delete-orphan",
         order_by="PriceRecord.checked_at.desc()",
@@ -57,9 +57,9 @@ class PriceRecord(Base):
     source: Mapped[str] = mapped_column(String(255), nullable=False)  # e.g. "google_shopping"
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
-    item: Mapped["Item"] = relationship(back_populates="price_records")
+    item: Mapped[Item] = relationship(back_populates="price_records")
 
     def __repr__(self) -> str:
         return f"<PriceRecord item_id={self.item_id} price={self.price} source={self.source!r}>"
