@@ -7,15 +7,14 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends gcc && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy project definition and install dependencies
-COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+# Copy project files needed for build/install
+COPY pyproject.toml README.md ./
 
 # Copy application source
 COPY src/ src/
 
-# Install the package in editable mode (source is already copied)
-RUN pip install --no-cache-dir -e .
+# Install the package (includes all dependencies)
+RUN pip install --no-cache-dir .
 
 # Create data directory for SQLite
 RUN mkdir -p /app/data

@@ -16,5 +16,13 @@
 - [x] README.md
 - [x] Fix test fixtures (StaticPool for in-memory SQLite, lifespan patching)
 - [x] Upgrade to Python 3.12 venv
-- [ ] Initialize git repo (GitFlow: main + develop)
-- [ ] Verify Docker build
+- [x] Initialize git repo (GitFlow: main + develop)
+- [x] Verify Docker build (image builds, container starts, /health responds)
+- [x] Add .dockerignore
+- [x] Clean up stale files (CLAUDE.md, rules/)
+
+## Backlog
+
+- [ ] Run ruff lint pass
+- [ ] Set up CI/CD
+- [ ] Add more search engines (Amazon, etc.)
