@@ -58,6 +58,35 @@ pip install -e ".[dev]"
 uvicorn hunter_bargain.main:app --reload
 ```
 
+## CLI Usage
+
+The `hb` command lets you manage tracked items from your terminal (requires the API server to be running).
+
+```bash
+# Add an item to track
+hb add "iPhone 15 Pro" -e you@example.com -t 899.99 -k "256GB black titanium"
+
+# List all tracked items
+hb ls
+
+# Update an item
+hb update 1 -t 849.99
+
+# Trigger a price check (single item or all)
+hb check 1
+hb check
+
+# Remove an item
+hb rm 1
+
+# Point at a different server
+hb --url http://myserver:9000 ls
+
+# Or via environment variable
+export HUNTER_BARGAIN_URL=http://myserver:9000
+hb ls
+```
+
 ## API Usage
 
 ### Add an item to track
@@ -101,6 +130,7 @@ curl -X DELETE http://localhost:8000/api/v1/items/1
 
 | Command | Description |
 |---------|-------------|
+| `hb --help` | Show CLI usage |
 | `pip install -e ".[dev]"` | Install with dev dependencies |
 | `docker-compose up --build` | Run with Docker |
 | `pytest` | Run test suite |
@@ -109,7 +139,7 @@ curl -X DELETE http://localhost:8000/api/v1/items/1
 
 ## How It Works
 
-1. **Add items** via the REST API with a name, optional keywords, target price, and notification email.
+1. **Add items** via the CLI (`hb add`) or REST API with a name, optional keywords, target price, and notification email.
 2. **Daily scheduler** (APScheduler) runs a price check across all engines for every tracked item at the configured cron time (default: 9 AM UTC).
 3. **On-demand checks** available via `POST /api/v1/prices/check/{id}`.
 4. **Search engines** (Google Shopping, Bing Shopping via SerpAPI) return price results sorted by price.

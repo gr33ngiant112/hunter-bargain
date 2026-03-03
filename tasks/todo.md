@@ -20,6 +20,7 @@
 - [x] Verify Docker build (image builds, container starts, /health responds)
 - [x] Add .dockerignore
 - [x] Clean up stale files (CLAUDE.md, rules/)
+- [x] CLI tool (`hb` command) — add, rm, ls, update, check (18 tests)
 
 ## Backlog
 
