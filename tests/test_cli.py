@@ -54,7 +54,7 @@ class TestAdd:
         assert "Sony WH-1000XM5" in result.output
 
         call_args = mock_req.call_args
-        assert call_args[0] == ("POST", "http://localhost:8000/items/")
+        assert call_args[0] == ("POST", "http://localhost:8000/api/v1/items/")
         payload = call_args[1]["json"]
         assert payload["name"] == "Sony WH-1000XM5"
         assert payload["notify_email"] == "user@example.com"
@@ -240,7 +240,7 @@ class TestCustomUrl:
         assert result.exit_code == 0
         mock_req.assert_called_once()
         called_url = mock_req.call_args[0][1]
-        assert called_url == "http://myserver:9000/items/"
+        assert called_url == "http://myserver:9000/api/v1/items/"
 
     def test_custom_url_from_env(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
@@ -249,4 +249,4 @@ class TestCustomUrl:
 
         assert result.exit_code == 0
         called_url = mock_req.call_args[0][1]
-        assert called_url == "http://remote:5000/items/"
+        assert called_url == "http://remote:5000/api/v1/items/"

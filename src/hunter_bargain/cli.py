@@ -76,7 +76,7 @@ def add(
     if keywords is not None:
         payload["keywords"] = keywords
 
-    resp = _request("POST", f"{_base_url(ctx)}/items/", json=payload)
+    resp = _request("POST", f"{_base_url(ctx)}/api/v1/items/", json=payload)
 
     if resp.status_code == 201:
         item = resp.json()
@@ -101,7 +101,7 @@ def add(
 def remove(ctx: click.Context, item_id: int, yes: bool) -> None:
     """Remove an item from tracking by ID."""
     if not yes:
-        resp = _request("GET", f"{_base_url(ctx)}/items/{item_id}")
+        resp = _request("GET", f"{_base_url(ctx)}/api/v1/items/{item_id}")
         if resp.status_code == 404:
             click.secho(f"Item {item_id} not found.", fg="red", err=True)
             sys.exit(1)
@@ -110,7 +110,7 @@ def remove(ctx: click.Context, item_id: int, yes: bool) -> None:
             click.echo("Cancelled.")
             return
 
-    resp = _request("DELETE", f"{_base_url(ctx)}/items/{item_id}")
+    resp = _request("DELETE", f"{_base_url(ctx)}/api/v1/items/{item_id}")
 
     if resp.status_code == 204:
         click.secho(f"Removed item #{item_id}.", fg="green")
@@ -126,7 +126,7 @@ def remove(ctx: click.Context, item_id: int, yes: bool) -> None:
 @click.pass_context
 def list_items(ctx: click.Context) -> None:
     """List all tracked items."""
-    resp = _request("GET", f"{_base_url(ctx)}/items/")
+    resp = _request("GET", f"{_base_url(ctx)}/api/v1/items/")
 
     if resp.status_code != 200:
         click.secho(f"Error {resp.status_code}: {resp.text}", fg="red", err=True)
@@ -172,7 +172,7 @@ def update(
         click.echo("Nothing to update — provide at least one option.", err=True)
         sys.exit(1)
 
-    resp = _request("PATCH", f"{_base_url(ctx)}/items/{item_id}", json=payload)
+    resp = _request("PATCH", f"{_base_url(ctx)}/api/v1/items/{item_id}", json=payload)
 
     if resp.status_code == 200:
         item = resp.json()
@@ -202,9 +202,9 @@ def check(ctx: click.Context, item_id: int | None) -> None:
     If ITEM_ID is given, checks that item only. Otherwise checks all items.
     """
     if item_id is not None:
-        resp = _request("POST", f"{_base_url(ctx)}/prices/check/{item_id}")
+        resp = _request("POST", f"{_base_url(ctx)}/api/v1/prices/check/{item_id}")
     else:
-        resp = _request("POST", f"{_base_url(ctx)}/prices/check-all")
+        resp = _request("POST", f"{_base_url(ctx)}/api/v1/prices/check-all")
 
     if resp.status_code == 404:
         click.secho(f"Item {item_id} not found.", fg="red", err=True)

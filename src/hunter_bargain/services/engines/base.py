@@ -16,6 +16,9 @@ class SearchResult:
         currency: ISO 4217 currency code (default USD).
         source: Engine identifier (e.g. "google_shopping").
         url: Direct link to the product listing.
+        extensions: Optional metadata tags from the search engine (e.g.
+            ``["Smartphone", "5G", "OLED"]`` from Google Shopping).  Useful
+            for distinguishing product categories from accessories.
     """
 
     title: str
@@ -23,6 +26,7 @@ class SearchResult:
     currency: str
     source: str
     url: str | None = None
+    extensions: tuple[str, ...] | None = None
 
 
 class SearchEngine(ABC):
