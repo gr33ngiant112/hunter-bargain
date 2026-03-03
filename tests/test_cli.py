@@ -192,6 +192,7 @@ class TestCheck:
         assert result.exit_code == 0
         assert "$279.99" in result.output
         assert "Google Shopping" in result.output
+        assert "-> https://example.com" in result.output
 
     def test_check_all(self, runner: CliRunner):
         check_results = [
@@ -200,7 +201,7 @@ class TestCheck:
                 "item_name": "Item A",
                 "lowest_price": 10.00,
                 "lowest_source": "Bing",
-                "lowest_url": None,
+                "lowest_url": "https://example.com/item-a",
                 "results_count": 1,
                 "records": [],
             },
@@ -220,7 +221,9 @@ class TestCheck:
 
         assert result.exit_code == 0
         assert "Item A: $10.00" in result.output
+        assert "-> https://example.com/item-a" in result.output
         assert "Item B: no results found" in result.output
+        assert result.output.count("->") == 1
 
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:

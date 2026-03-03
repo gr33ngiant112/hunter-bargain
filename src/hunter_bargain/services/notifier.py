@@ -19,7 +19,15 @@ def _build_html_body(item: Item, result: SearchResult) -> str:
     """Build the HTML email body for a price alert."""
     link_html = ""
     if result.url:
-        link_html = f'<p><a href="{result.url}">View Listing</a></p>'
+        link_html = (
+            '<p style="text-align: center; margin: 24px 0;">'
+            f'<a href="{result.url}" '
+            'style="display: inline-block; background-color: #2d8a4e; color: #ffffff; '
+            "padding: 14px 32px; border-radius: 8px; text-decoration: none; "
+            'font-size: 16px; font-weight: 700;">'
+            "Buy Now"
+            "</a></p>"
+        )
 
     return f"""
     <html>
