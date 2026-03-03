@@ -48,6 +48,8 @@ class GoogleShoppingEngine(SearchEngine):
                     price = _parse_price(price_str)
 
                 if price is not None and price > 0:
+                    raw_ext = item.get("extensions")
+                    extensions = tuple(raw_ext) if raw_ext else None
                     results.append(
                         SearchResult(
                             title=item.get("title", ""),
@@ -55,6 +57,7 @@ class GoogleShoppingEngine(SearchEngine):
                             currency="USD",
                             source=self.name,
                             url=item.get("link"),
+                            extensions=extensions,
                         )
                     )
 
