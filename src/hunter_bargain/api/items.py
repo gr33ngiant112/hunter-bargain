@@ -1,0 +1,66 @@
+"""CRUD endpoints for tracked items."""
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+
+from hunter_bargain.db import get_db
+from hunter_bargain.models import Item
+from hunter_bargain.schemas import ItemCreate, ItemResponse, ItemUpdate
+
+router = APIRouter(prefix="/items", tags=["items"])
+
+
+@router.post("/", response_model=ItemResponse, status_code=status.HTTP_201_CREATED)
+def create_item(payload: ItemCreate, db: Session = Depends(get_db)) -> Item:
+    """Add a new item to track."""
+    item = Item(
+        name=payload.name,
+        keywords=payload.keywords,
+        target_price=payload.target_price,
+        notify_email=payload.notify_email,
+    )
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.get("/", response_model=list[ItemResponse])
+def list_items(db: Session = Depends(get_db)) -> list[Item]:
+    """List all tracked items."""
+    return list(db.query(Item).order_by(Item.created_at.desc()).all())
+
+
+@router.get("/{item_id}", response_model=ItemResponse)
+def get_item(item_id: int, db: Session = Depends(get_db)) -> Item:
+    """Get a single tracked item by ID."""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
+    return item
+
+
+@router.patch("/{item_id}", response_model=ItemResponse)
+def update_item(item_id: int, payload: ItemUpdate, db: Session = Depends(get_db)) -> Item:
+    """Update a tracked item. Only provided fields are changed."""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(item, field, value)
+
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_item(item_id: int, db: Session = Depends(get_db)) -> None:
+    """Remove an item from tracking. Deletes all associated price records."""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
+    db.delete(item)
+    db.commit()
