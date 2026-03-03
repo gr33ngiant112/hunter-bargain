@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="800" y2="340" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22c55e"/>
+      <stop offset="100%" stop-color="#16a34a"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#f59e0b"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="340" rx="16" fill="url(#bg)"/>
+
+  <!-- Decorative grid dots -->
+  <g opacity="0.06" fill="#fff">
+    <circle cx="40" cy="40" r="1.5"/><circle cx="80" cy="40" r="1.5"/><circle cx="120" cy="40" r="1.5"/><circle cx="160" cy="40" r="1.5"/>
+    <circle cx="40" cy="80" r="1.5"/><circle cx="80" cy="80" r="1.5"/><circle cx="120" cy="80" r="1.5"/><circle cx="160" cy="80" r="1.5"/>
+    <circle cx="640" cy="260" r="1.5"/><circle cx="680" cy="260" r="1.5"/><circle cx="720" cy="260" r="1.5"/><circle cx="760" cy="260" r="1.5"/>
+    <circle cx="640" cy="300" r="1.5"/><circle cx="680" cy="300" r="1.5"/><circle cx="720" cy="300" r="1.5"/><circle cx="760" cy="300" r="1.5"/>
+  </g>
+
+  <!-- Laptop icon -->
+  <g transform="translate(80, 70)" filter="url(#shadow)">
+    <!-- Laptop screen -->
+    <rect x="0" y="0" width="120" height="80" rx="8" fill="#334155" stroke="#475569" stroke-width="2"/>
+    <!-- Screen content - price tags -->
+    <rect x="12" y="12" width="96" height="56" rx="4" fill="#1e293b"/>
+    <!-- Dollar signs bouncing on screen -->
+    <text x="30" y="38" font-family="monospace" font-size="16" fill="#22c55e" font-weight="bold">$$$</text>
+    <text x="45" y="55" font-family="monospace" font-size="12" fill="#fbbf24">DEAL!</text>
+    <!-- Laptop base -->
+    <rect x="-10" y="82" width="140" height="8" rx="4" fill="#475569"/>
+    <!-- Sunglasses on laptop (the Biden touch) -->
+    <g transform="translate(18, -15)">
+      <!-- Left lens -->
+      <ellipse cx="20" cy="12" rx="18" ry="12" fill="#0f172a" stroke="#f59e0b" stroke-width="2.5"/>
+      <!-- Right lens -->
+      <ellipse cx="64" cy="12" rx="18" ry="12" fill="#0f172a" stroke="#f59e0b" stroke-width="2.5"/>
+      <!-- Bridge -->
+      <path d="M38 12 Q42 6 46 12" stroke="#f59e0b" stroke-width="2.5" fill="none"/>
+      <!-- Left arm -->
+      <line x1="2" y1="8" x2="-8" y2="6" stroke="#f59e0b" stroke-width="2"/>
+      <!-- Right arm -->
+      <line x1="82" y1="8" x2="92" y2="6" stroke="#f59e0b" stroke-width="2"/>
+      <!-- Lens glare -->
+      <ellipse cx="14" cy="9" rx="4" ry="3" fill="#fbbf24" opacity="0.15"/>
+      <ellipse cx="58" cy="9" rx="4" ry="3" fill="#fbbf24" opacity="0.15"/>
+    </g>
+  </g>
+
+  <!-- Main title -->
+  <text x="240" y="105" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="48" font-weight="800" fill="url(#green)" filter="url(#glow)">hunter-bargain</text>
+
+  <!-- Tagline -->
+  <text x="240" y="138" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="16" fill="#94a3b8" font-weight="500" letter-spacing="0.5">The price tracker that actually finds deals (on a laptop near you)</text>
+
+  <!-- Divider -->
+  <line x1="240" y1="155" x2="720" y2="155" stroke="#334155" stroke-width="1"/>
+
+  <!-- Feature pills -->
+  <g transform="translate(240, 172)">
+    <!-- Pill 1 -->
+    <rect x="0" y="0" width="130" height="30" rx="15" fill="#22c55e" opacity="0.15" stroke="#22c55e" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="16" y="20" font-family="system-ui, sans-serif" font-size="12" fill="#4ade80" font-weight="600">🔍 Price Hunting</text>
+
+    <!-- Pill 2 -->
+    <rect x="142" y="0" width="130" height="30" rx="15" fill="#3b82f6" opacity="0.15" stroke="#3b82f6" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="158" y="20" font-family="system-ui, sans-serif" font-size="12" fill="#60a5fa" font-weight="600">📧 Email Alerts</text>
+
+    <!-- Pill 3 -->
+    <rect x="284" y="0" width="120" height="30" rx="15" fill="#f59e0b" opacity="0.15" stroke="#f59e0b" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="300" y="20" font-family="system-ui, sans-serif" font-size="12" fill="#fbbf24" font-weight="600">🐳 Dockerized</text>
+
+    <!-- Pill 4 -->
+    <rect x="416" y="0" width="100" height="30" rx="15" fill="#a855f7" opacity="0.15" stroke="#a855f7" stroke-width="1" stroke-opacity="0.3"/>
+    <text x="432" y="20" font-family="system-ui, sans-serif" font-size="12" fill="#c084fc" font-weight="600">⚡ FastAPI</text>
+  </g>
+
+  <!-- Funny quote -->
+  <g transform="translate(240, 225)">
+    <text font-family="system-ui, sans-serif" font-size="13" fill="#64748b" font-style="italic">"I did not have financial relations with that price tag"</text>
+    <text y="22" font-family="system-ui, sans-serif" font-size="11" fill="#475569">— hunter-bargain, probably</text>
+  </g>
+
+  <!-- Bottom badges area -->
+  <g transform="translate(240, 280)">
+    <rect x="0" y="0" width="88" height="22" rx="4" fill="#334155"/>
+    <text x="8" y="15" font-family="monospace" font-size="11" fill="#22c55e">Python 3.12+</text>
+
+    <rect x="96" y="0" width="72" height="22" rx="4" fill="#334155"/>
+    <text x="104" y="15" font-family="monospace" font-size="11" fill="#60a5fa">MIT License</text>
+
+    <rect x="176" y="0" width="96" height="22" rx="4" fill="#334155"/>
+    <text x="184" y="15" font-family="monospace" font-size="11" fill="#fbbf24">59 tests ✓</text>
+
+    <rect x="280" y="0" width="110" height="22" rx="4" fill="#334155"/>
+    <text x="288" y="15" font-family="monospace" font-size="11" fill="#f87171">Zero Dummy Data</text>
+  </g>
+
+  <!-- Version tag -->
+  <g transform="translate(680, 20)">
+    <rect width="80" height="24" rx="12" fill="#22c55e" opacity="0.2" stroke="#22c55e" stroke-width="1" stroke-opacity="0.4"/>
+    <text x="18" y="16" font-family="monospace" font-size="12" fill="#4ade80" font-weight="700">v0.1.0</text>
+  </g>
+</svg>

@@ -1,0 +1,175 @@
+# Contributing to hunter-bargain
+
+First off, thanks for wanting to contribute! Every pull request, bug report, and feature suggestion helps make this project better.
+
+## Table of Contents
+
+- [Code of Conduct](#code-of-conduct)
+- [Getting Started](#getting-started)
+- [Development Setup](#development-setup)
+- [Making Changes](#making-changes)
+- [Pull Request Process](#pull-request-process)
+- [Style Guide](#style-guide)
+- [Reporting Bugs](#reporting-bugs)
+- [Suggesting Features](#suggesting-features)
+
+## Code of Conduct
+
+Be respectful, constructive, and kind. That's it. No 47-page document needed.
+
+## Getting Started
+
+1. Fork the repository
+2. Clone your fork:
+   ```bash
+   git clone https://github.com/<your-username>/hunter-bargain.git
+   cd hunter-bargain
+   ```
+3. Set up your development environment (see below)
+
+## Development Setup
+
+### Prerequisites
+
+- Python 3.12+
+- Docker & Docker Compose (for containerized runs)
+- A [SerpAPI](https://serpapi.com/) key (free tier works for development)
+
+### Install
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+pip install -e ".[dev]"
+```
+
+### Configure
+
+```bash
+cp .env.example .env
+# Edit .env with your API keys and SMTP credentials
+```
+
+### Run Tests
+
+```bash
+pytest -v
+```
+
+### Lint & Format
+
+```bash
+ruff check .
+ruff format .
+```
+
+### Run Locally
+
+```bash
+uvicorn hunter_bargain.main:app --reload
+```
+
+### Run with Docker
+
+```bash
+docker compose up --build
+```
+
+## Making Changes
+
+### Branch Strategy (GitFlow)
+
+We follow strict GitFlow:
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Production-ready releases only |
+| `develop` | Integration branch for features |
+| `feature/<name>` | New features (branch from `develop`) |
+| `release/<version>` | Release stabilization |
+| `hotfix/<name>` | Urgent production fixes |
+
+**Always branch from `develop`:**
+
+```bash
+git checkout develop
+git pull origin develop
+git checkout -b feature/my-awesome-feature
+```
+
+### Commit Messages
+
+Write descriptive commit messages that explain *why*, not just *what*:
+
+```
+feat: add Amazon search engine for broader price coverage
+
+The existing Google/Bing engines miss deals from Amazon marketplace.
+Adding a dedicated Amazon engine increases price coverage by ~40%.
+```
+
+Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
+
+## Pull Request Process
+
+1. Ensure all tests pass: `pytest -v`
+2. Ensure lint is clean: `ruff check . && ruff format --check .`
+3. Update `CHANGELOG.md` with your changes under `[Unreleased]`
+4. Create a PR targeting `develop` (never `main` directly)
+5. Fill in the PR template with a clear description
+6. Request review from a maintainer
+
+### PR Requirements
+
+- [ ] Tests pass
+- [ ] Lint passes
+- [ ] New features have tests
+- [ ] Bug fixes include regression tests
+- [ ] No dummy data, placeholders, or hardcoded secrets
+- [ ] CHANGELOG updated
+
+## Style Guide
+
+### Python
+
+- Python 3.12+ features encouraged (type hints, match statements, etc.)
+- Line length: 100 characters
+- Ruff for linting and formatting (`ruff check .` / `ruff format .`)
+- Lint rules: `E, F, I, N, W, UP, B, SIM`
+
+### Code Principles
+
+- **Minimal changes**: Impact as little code as possible
+- **Root causes**: Fix the actual problem, not symptoms
+- **No type suppression**: Never use `as any`, `# type: ignore`, `@ts-ignore`
+- **No empty catch blocks**: Always handle or log errors
+- **Zero dummy data**: Never hardcode fake responses or placeholder values
+
+### Testing
+
+- Use `pytest` with fixtures from `conftest.py`
+- Mock external calls (SerpAPI, SMTP) — never make real network calls in tests
+- Test both happy paths and error cases
+
+## Reporting Bugs
+
+Open an issue with:
+
+1. **What happened** (actual behavior)
+2. **What you expected** (expected behavior)
+3. **Steps to reproduce**
+4. **Environment** (OS, Python version, Docker version)
+5. **Logs** (if applicable)
+
+## Suggesting Features
+
+Open an issue with:
+
+1. **Problem**: What pain point does this solve?
+2. **Proposed solution**: How would you approach it?
+3. **Alternatives considered**: What else did you think about?
+4. **Scope**: Is this a small tweak or a large feature?
+
+---
+
+Thank you for contributing!
