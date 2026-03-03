@@ -50,6 +50,12 @@ class TestSendPriceAlert:
         mock_server.login.assert_called_once_with("bot@example.com", "secret")
         mock_server.send_message.assert_called_once()
 
+        sent_message = mock_server.send_message.call_args.args[0]
+        serialized = sent_message.as_string()
+        assert "Buy Now" in serialized
+        assert "background-color: #2d8a4e" in serialized
+        assert "Link: http://example.com/widget" in serialized
+
 
 def test_health_check(client):
     """GET /health returns ok status."""

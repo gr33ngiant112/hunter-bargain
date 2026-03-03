@@ -220,8 +220,11 @@ def check(ctx: click.Context, item_id: int | None) -> None:
         count = result["results_count"]
         lowest = result.get("lowest_price")
         source = result.get("lowest_source", "")
+        lowest_url = result.get("lowest_url")
 
         if lowest is not None:
             click.echo(f"  {name}: ${lowest:.2f} ({source}) — {count} result(s)")
+            if lowest_url:
+                click.echo(f"    -> {lowest_url}")
         else:
             click.secho(f"  {name}: no results found", fg="yellow")
