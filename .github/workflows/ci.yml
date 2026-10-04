@@ -44,6 +44,13 @@ jobs:
       contents: read
       pull-requests: read # gitleaks-action lists a PR's commits through the API
     steps:
+      # gitleaks-action reads a PR's commits with one unpaginated API call (at most 30), and the
+      # push run after a merge scans no PR commits, so a longer PR would be only partly scanned.
+      - name: Refuse PRs too long for a full scan
+        if: github.event_name == 'pull_request' && github.event.pull_request.commits > 30
+        run: |
+          echo "::error::This PR has more than 30 commits; the secret scan covers only 30. Split it into smaller PRs."
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0

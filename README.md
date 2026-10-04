@@ -265,6 +265,11 @@ docker compose up --build -d
 - Health check: `curl http://localhost:8000/health`
 - SQLite data persisted via Docker volume (`app-data`)
 - Container auto-restarts on failure
+- The port is published on 127.0.0.1 only. On the host, use `curl http://localhost:8000/...` or run the CLI
+  inside the container: `docker compose exec app hb ls`. For access from other machines, put a reverse
+  proxy with authentication in front; the API has no authentication of its own yet (#1).
+- To pick up base-image and dependency fixes, rebuild without the cache:
+  `docker compose build --pull --no-cache && docker compose up -d`
 
 ### Local Development
 
