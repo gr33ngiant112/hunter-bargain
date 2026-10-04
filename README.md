@@ -245,7 +245,8 @@ All configuration is via environment variables (`.env` file):
 | `DATABASE_URL` | `sqlite:///./data/hunter_bargain.db` | SQLAlchemy database URL |
 | `SERPAPI_KEY` | — | SerpAPI key (required for searches) |
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
-| `SMTP_PORT` | `587` | SMTP server port |
+| `SMTP_PORT` | `587` | SMTP server port; `465` uses implicit TLS, any other port uses STARTTLS. Both verify the server certificate |
+| `SMTP_TIMEOUT` | `30` | Seconds to wait for the SMTP server before giving up |
 | `SMTP_USER` | — | SMTP login username |
 | `SMTP_PASSWORD` | — | SMTP login password |
 | `EMAIL_FROM` | `SMTP_USER` | From address for alerts |
