@@ -159,7 +159,7 @@ Open an issue with:
 2. **What you expected** (expected behavior)
 3. **Steps to reproduce**
 4. **Environment** (OS, Python version, Docker version)
-5. **Logs** (if applicable)
+5. **Logs** (if applicable), with API keys, passwords and other secrets removed: issues are public
 
 ## Suggesting Features
 

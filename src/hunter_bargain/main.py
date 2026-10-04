@@ -13,13 +13,11 @@ from hunter_bargain.api.items import router as items_router
 from hunter_bargain.api.prices import router as prices_router
 from hunter_bargain.config import settings
 from hunter_bargain.db import init_db
+from hunter_bargain.logging_config import configure_logging
 from hunter_bargain.services.scheduler import start_scheduler, stop_scheduler
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# Configure logging; this also redacts the SerpAPI key from every log record.
+configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 

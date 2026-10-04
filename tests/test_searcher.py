@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+from pydantic import SecretStr
+
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.engines.google import GoogleShoppingEngine, _parse_price
@@ -65,7 +67,7 @@ class TestGoogleShoppingEngine:
 
     @patch("hunter_bargain.services.engines.google.settings")
     def test_skips_when_no_api_key(self, mock_settings):
-        mock_settings.serpapi_key = ""
+        mock_settings.serpapi_key = SecretStr("")
         engine = GoogleShoppingEngine()
         results = engine.search("iPhone")
         assert results == []
@@ -73,7 +75,7 @@ class TestGoogleShoppingEngine:
     @patch("hunter_bargain.services.engines.google.GoogleSearch")
     @patch("hunter_bargain.services.engines.google.settings")
     def test_returns_sorted_results(self, mock_settings, mock_google_search_cls):
-        mock_settings.serpapi_key = "test-key"
+        mock_settings.serpapi_key = SecretStr("test-key")
         mock_instance = MagicMock()
         mock_instance.get_dict.return_value = {
             "shopping_results": [
