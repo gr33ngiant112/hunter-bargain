@@ -160,7 +160,8 @@ def test_uvicorn_style_access_log_is_redacted_and_still_formats():
     # handler, whose AccessFormatter unpacks record.args.
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
-    handler.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s'))
+    fmt = '%(client_addr)s - "%(request_line)s" %(status_code)s'
+    handler.setFormatter(AccessFormatter(fmt, use_colors=False))
     log = logging.getLogger("tests.access")
     log.addHandler(handler)
     log.propagate = False
