@@ -35,15 +35,16 @@ def _redact_message(record: logging.LogRecord) -> None:
         message = record.getMessage()
     except Exception:
         return  # malformed logging call: logging reports it when the record is emitted
-    if not _API_KEY.search(message):
+    redacted = _redact(message)
+    if redacted == message:
         return
     if record.args:
         # Redact string arguments in place first, so formatters that unpack
         # record.args (uvicorn's access log) keep working.
         record.args = _redact_args(record.args)
-        if not _API_KEY.search(record.getMessage()):
+        if record.getMessage() == redacted:
             return
-    record.msg, record.args = _redact(message), None
+    record.msg, record.args = redacted, None
 
 
 def _redact_traceback(record: logging.LogRecord) -> None:
@@ -51,8 +52,9 @@ def _redact_traceback(record: logging.LogRecord) -> None:
     # the record; Formatter.format() then reuses record.exc_text when it is set.
     if record.exc_info:
         text = _TRACEBACK_FORMATTER.formatException(record.exc_info)
-        if _API_KEY.search(text):
-            record.exc_text = _redact(text)
+        redacted = _redact(text)
+        if redacted != text:
+            record.exc_text = redacted
 
 
 class _RedactingRecordFactory:

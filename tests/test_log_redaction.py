@@ -26,6 +26,7 @@ import pytest
 import requests
 from pydantic import SecretStr
 from serpapi import GoogleSearch
+from uvicorn.logging import AccessFormatter
 
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.services.engines.bing import BingShoppingEngine
@@ -143,6 +144,7 @@ def test_third_party_records_are_redacted(logger_name, caplog):
 
     log.debug(f"GET {path}")  # in the message
     log.debug('"GET %s HTTP/1.1" %s', path, 200)  # in a string argument, as urllib3 logs it
+    log.debug("GET /search?api_key=%s&num=10", FAKE_KEY)  # the value alone as an argument
     log.warning("request failed: %s", error)  # in a non-string argument
     try:
         raise error
@@ -150,23 +152,26 @@ def test_third_party_records_are_redacted(logger_name, caplog):
         log.exception("search failed")  # in the traceback
 
     assert FAKE_KEY not in caplog.text
-    assert caplog.text.count("api_key=***") == 4
+    assert caplog.text.count("api_key=***") == 5
 
 
-def test_handlers_outside_root_get_redacted_records():
-    # uvicorn's loggers do not propagate to root; they write through their own handlers.
+def test_uvicorn_style_access_log_is_redacted_and_still_formats():
+    # uvicorn's access logger does not propagate to root: it writes through its own
+    # handler, whose AccessFormatter unpacks record.args.
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
-    log = logging.getLogger("tests.own_handler")
+    handler.setFormatter(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s'))
+    log = logging.getLogger("tests.access")
     log.addHandler(handler)
     log.propagate = False
     try:
-        log.error("GET /search?api_key=%s", FAKE_KEY)
+        path = f"/health?api_key={FAKE_KEY}"
+        log.warning('%s - "%s %s HTTP/%s" %d', "127.0.0.1:50000", "GET", path, "1.1", 200)
     finally:
         log.removeHandler(handler)
         log.propagate = True
 
-    assert stream.getvalue() == "GET /search?api_key=***\n"
+    assert stream.getvalue() == '127.0.0.1:50000 - "GET /health?api_key=*** HTTP/1.1" 200 OK\n'
 
 
 def test_serpapi_key_is_a_secret(monkeypatch):
