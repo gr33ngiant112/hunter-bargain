@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -15,8 +16,9 @@ class Settings(BaseSettings):
     # SMTP email
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
+    smtp_timeout: float = 30  # seconds, for the connect and each SMTP command
     smtp_user: str = ""
-    smtp_password: str = ""
+    smtp_password: SecretStr = SecretStr("")
     email_from: str = ""
 
     # SerpAPI

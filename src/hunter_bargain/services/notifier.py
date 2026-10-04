@@ -5,6 +5,7 @@ Sends price alerts via SMTP when a tracked item hits its target price.
 
 import logging
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -91,9 +92,26 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
         msg.attach(MIMEText(plain, "plain"))
         msg.attach(MIMEText(_build_html_body(item, result), "html"))
 
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
-            server.starttls()
-            server.login(settings.smtp_user, settings.smtp_password)
+        # Verify the server certificate and hostname on both paths: without a context,
+        # starttls() skips verification.
+        context = ssl.create_default_context()
+        implicit_tls = settings.smtp_port == 465  # SMTPS: TLS from the first byte
+        if implicit_tls:
+            connection = smtplib.SMTP_SSL(
+                settings.smtp_host,
+                settings.smtp_port,
+                context=context,
+                timeout=settings.smtp_timeout,
+            )
+        else:
+            connection = smtplib.SMTP(
+                settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout
+            )
+
+        with connection as server:
+            if not implicit_tls:
+                server.starttls(context=context)
+            server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
             server.send_message(msg)
 
         logger.info("Price alert sent to %s for item %d", item.notify_email, item.id)
