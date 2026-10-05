@@ -168,3 +168,33 @@ def test_failed_check_is_logged_with_the_item_id_and_name(db_session, three_item
     [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert failure.getMessage() == f"Price check failed for item {second} ('Second')"
     assert failure.exc_info is not None and failure.exc_info[0] is IntegrityError
+
+
+def test_check_that_fails_after_its_item_was_deleted_is_logged_and_the_run_continues(
+    db_session, three_items, caplog
+):
+    """#10: the failure is logged with the id and name read before the check.
+
+    run_price_check commits once it has saved its price records, which expires the item. If the
+    item is deleted after that and the check then fails, reading item.name in the handler would
+    raise ObjectDeletedError again and end the run.
+    """
+    first, second, third = three_items
+    checked: list[int] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        if item.id == second:
+            db.commit()
+            with _sessions(db_session)() as api_db:
+                api_db.delete(api_db.get(Item, second))
+                api_db.commit()
+            raise RuntimeError("alert could not be sent")
+        return _empty_result(item)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        _run_job(db_session, fake_check)
+
+    assert checked == [first, second, third]
+    [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert failure.getMessage() == f"Price check failed for item {second} ('Second')"

@@ -41,7 +41,8 @@ def _scheduled_price_check() -> None:
 
 
 def _check_item(item_id: int) -> None:
-    """Check one item in a session of its own; on failure, log it and roll back."""
+    """Check one item in a session of its own; a failure is logged, and closing the session
+    at the end of the with block rolls back whatever the failed check left uncommitted."""
     with SessionLocal() as db:
         item = db.get(Item, item_id)
         if item is None:
@@ -59,7 +60,6 @@ def _check_item(item_id: int) -> None:
                 f"{result.lowest_price:.2f}" if result.lowest_price else "N/A",
             )
         except Exception:
-            db.rollback()
             logger.exception("Price check failed for item %d (%r)", item_id, name)
 
 
