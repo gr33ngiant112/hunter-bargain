@@ -304,6 +304,50 @@ class TestCheck:
         assert f"    -> https://example.com/{CLEANED}\n" in result.output
         assert f"  Other {CLEANED}: no results found\n" in result.output
 
+    def test_check_shows_merchant_next_to_engine(self, runner: CliRunner):
+        check_result = {
+            "item_id": 1,
+            "item_name": "Folgers Classic Roast Ground Coffee",
+            "lowest_price": 5.88,
+            "lowest_source": "google_shopping",
+            "lowest_merchant": "Walmart",
+            "lowest_url": "https://www.google.com/shopping/product/16914877625280977865?gl=us",
+            "results_count": 3,
+            "records": [],
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert (
+            "  Folgers Classic Roast Ground Coffee: $5.88 (Walmart via google_shopping)"
+            " — 3 result(s)\n"
+        ) in result.output
+
+    def test_check_strips_control_characters_from_merchant(self, runner: CliRunner):
+        check_result = {
+            "item_id": 1,
+            "item_name": "Sony WH-1000XM5",
+            "lowest_price": 279.99,
+            "lowest_source": "bing_shopping",
+            "lowest_merchant": f"Shop {WITH_CONTROLS}",
+            "lowest_url": None,
+            "results_count": 3,
+            "records": [],
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            # color=True keeps escape sequences in the output, as when printing to a terminal.
+            result = runner.invoke(cli, ["check", "1"], color=True)
+
+        assert result.exit_code == 0
+        assert _control_characters(result.output) == set()
+        assert (
+            f"  Sony WH-1000XM5: $279.99 (Shop {CLEANED} via bing_shopping) — 3 result(s)\n"
+            in result.output
+        )
+
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
             mock_req.return_value = _mock_response(404, {"detail": "Not found"})
