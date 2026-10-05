@@ -56,6 +56,23 @@ docs read.
 - A fresh clone starts: the SQLite database directory is created, and a `.env` copied from
   `.env.example` is accepted
 - The daily check runs in `PRICE_CHECK_TZ` instead of the host's local time zone
+- The daily check goes on when an item is deleted during the run, or when one item's check or
+  database access fails
+
+### Upgrading
+
+- Rebuild the image on current base-image and dependency fixes:
+  `docker compose build --pull --no-cache && docker compose up -d`
+- Set `ALERT_RECIPIENTS` in the env file before you upgrade. Unset, no address may receive
+  alerts: item create and update return 422, and alerts for existing items are skipped.
+- Docker Compose publishes the API on 127.0.0.1 by default. On the host, run the CLI in the container
+  (`docker compose exec app hb ls`). To reach the API from other machines, set `HB_BIND_ADDR`;
+  the API has no authentication, so use a trusted network or a reverse proxy with authentication.
+- SMTP verifies the server's certificate and host name, so a server with a self-signed or
+  mismatched certificate is refused. Port 465 uses implicit TLS, any other port STARTTLS.
+- Outside Docker, the daily check runs in `PRICE_CHECK_TZ` (default `UTC`) instead of the host's
+  local time zone. The Docker image already ran in UTC.
+- `APP_HOST` is no longer read; an env file that still sets it keeps working.
 
 ### Security
 
