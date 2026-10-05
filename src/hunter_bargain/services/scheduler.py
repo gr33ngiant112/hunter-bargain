@@ -24,6 +24,8 @@ scheduler = BackgroundScheduler()
 # One price check of all items at a time. The daily job and POST /prices/check-all share this
 # lock, so overlapping runs cannot check, and alert on, the same items twice. It is a plain Lock
 # because a check-all run takes it in the request's thread and releases it in its own thread.
+# Like the scheduler, it belongs to one process: the image runs a single uvicorn process, and
+# each extra worker (uvicorn --workers) would run its own daily job under its own lock.
 _run_lock = threading.Lock()
 
 
