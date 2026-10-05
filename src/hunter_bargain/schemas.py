@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unicodedata
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
@@ -145,3 +145,9 @@ class PriceCheckResult(BaseModel):
     # hourly limit reached: ...". Built from the engine name, HTTP status and SerpAPI's error
     # string only, never from exception text, which can carry the API key.
     engine_errors: list[str] = []
+
+
+class CheckAllStarted(BaseModel):
+    """POST /prices/check-all's answer: the check of all items runs in the background."""
+
+    status: Literal["started"] = "started"
