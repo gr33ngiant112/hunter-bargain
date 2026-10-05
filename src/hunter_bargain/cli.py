@@ -234,10 +234,16 @@ def check(ctx: click.Context, item_id: int | None) -> None:
         if merchant:
             source = f"{merchant} via {source}"
         lowest_url = result.get("lowest_url")
+        engine_errors = result.get("engine_errors") or []
 
         if lowest is not None:
             click.echo(f"  {name}: ${lowest:.2f} ({source}) — {count} result(s)")
             if lowest_url:
                 click.echo(f"    -> {_clean(lowest_url)}")
+        elif engine_errors:
+            click.secho(f"  {name}: no prices, {len(engine_errors)} engine error(s)", fg="red")
         else:
             click.secho(f"  {name}: no results found", fg="yellow")
+        # A failed engine may have missed a lower price, so its error shows either way.
+        for error in engine_errors:
+            click.echo(f"    engine error: {_clean(error)}")

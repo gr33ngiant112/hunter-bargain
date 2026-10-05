@@ -194,9 +194,12 @@ Response:
   "lowest_merchant": "Best Buy",
   "lowest_url": "https://www.google.com/shopping/product/...",
   "results_count": 5,
-  "records": [...]
+  "records": [...],
+  "engine_errors": []
 }
 ```
+
+`engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
 
 ## Architecture
 

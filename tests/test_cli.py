@@ -348,6 +348,95 @@ class TestCheck:
             in result.output
         )
 
+    def test_check_shows_engine_errors_instead_of_no_results(self, runner: CliRunner):
+        """A search that failed is not reported as "no results found" (#8); exit code stays 0."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Sony WH-1000XM5",
+            "lowest_price": None,
+            "lowest_source": None,
+            "lowest_url": None,
+            "results_count": 0,
+            "records": [],
+            "engine_errors": [
+                "google_shopping: HTTP 401, SerpAPI rejected the API key: Invalid API key.",
+                "bing_shopping: request failed (ConnectionError)",
+            ],
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "  Sony WH-1000XM5: no prices, 2 engine error(s)\n"
+            "    engine error: google_shopping: HTTP 401, SerpAPI rejected the API key:"
+            " Invalid API key.\n"
+            "    engine error: bing_shopping: request failed (ConnectionError)\n"
+        )
+
+    def test_check_all_shows_engine_errors_per_item(self, runner: CliRunner):
+        """An engine error shows under its item, also when the other engine found a price."""
+        check_results = [
+            {
+                "item_id": 1,
+                "item_name": "Item A",
+                "lowest_price": 10.00,
+                "lowest_source": "bing_shopping",
+                "lowest_url": "https://example.com/item-a",
+                "results_count": 1,
+                "records": [],
+                "engine_errors": ["google_shopping: HTTP 429, SerpAPI searches used up"],
+            },
+            {
+                "item_id": 2,
+                "item_name": "Item B",
+                "lowest_price": None,
+                "lowest_source": None,
+                "lowest_url": None,
+                "results_count": 0,
+                "records": [],
+                "engine_errors": [],
+            },
+        ]
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_results)
+            result = runner.invoke(cli, ["check"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "  Item A: $10.00 (bing_shopping) — 1 result(s)\n"
+            "    -> https://example.com/item-a\n"
+            "    engine error: google_shopping: HTTP 429, SerpAPI searches used up\n"
+            "  Item B: no results found\n"
+        )
+
+    def test_check_strips_control_characters_from_engine_errors(self, runner: CliRunner):
+        """SerpAPI's error string is third-party text."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Sony WH-1000XM5",
+            "lowest_price": 279.99,
+            "lowest_source": "bing_shopping",
+            "lowest_url": None,
+            "results_count": 3,
+            "records": [],
+            "engine_errors": [
+                f"google_shopping: HTTP 401, SerpAPI rejected the API key: {WITH_CONTROLS}"
+            ],
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            # color=True keeps escape sequences in the output, as when printing to a terminal.
+            result = runner.invoke(cli, ["check", "1"], color=True)
+
+        assert result.exit_code == 0
+        assert _control_characters(result.output) == set()
+        assert (
+            f"    engine error: google_shopping: HTTP 401, SerpAPI rejected the API key: {CLEANED}"
+            "\n" in result.output
+        )
+
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
             mock_req.return_value = _mock_response(404, {"detail": "Not found"})

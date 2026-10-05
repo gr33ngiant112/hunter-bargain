@@ -1,9 +1,18 @@
 """Shared test fixtures."""
 
+import json
+import socket
+import threading
+from collections.abc import Iterator
 from contextlib import ExitStack
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, override
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
+from serpapi import SerpApiClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -77,3 +86,76 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch):
         yield client
 
     app.dependency_overrides.clear()
+
+
+# A shopping_results row with fields both engines' documented rows have; a row needs a USD price
+# string to count.
+WIDGET_ROW = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
+
+
+@dataclass
+class StubSerpApi:
+    """A local stand-in for serpapi.com: every search gets this status and body."""
+
+    url: str
+    queries: list[dict[str, list[str]]]
+    status: int = 200
+    body: str = json.dumps({"shopping_results": [WIDGET_ROW]})
+    content_type: str = "application/json"
+
+
+def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    # SerpApiClient's subclasses (GoogleSearch, ...) read BACKEND from it too.
+    monkeypatch.setattr(SerpApiClient, "BACKEND", url)
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+
+
+@pytest.fixture
+def refused_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """SerpAPI on a 127.0.0.1 port that is bound but not listening: connections are refused."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        _point_client_at(monkeypatch, f"http://127.0.0.1:{sock.getsockname()[1]}")
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_serpapi(refused_serpapi: None) -> None:
+    """No test reaches serpapi.com: a search that no stub or mock answers is refused locally."""
+
+
+@pytest.fixture
+def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
+    """A local stand-in for serpapi.com that answers every search with one result.
+
+    A test can change the stub's status and body, e.g. to SerpAPI's documented error responses.
+    """
+    stub = StubSerpApi(url="", queries=[])
+
+    class Handler(BaseHTTPRequestHandler):
+        @override
+        def do_GET(self) -> None:
+            stub.queries.append(parse_qs(urlsplit(self.path).query))
+            body = stub.body.encode()
+            self.send_response(stub.status)
+            self.send_header("Content-Type", stub.content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        @override
+        def log_message(self, *args: Any) -> None:
+            """Stay quiet: request lines carry the key."""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    stub.url = f"http://127.0.0.1:{server.server_port}"
+    # shutdown() waits for the server's next poll, so poll often to keep each test's teardown short.
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    try:
+        _point_client_at(monkeypatch, stub.url)
+        yield stub
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
