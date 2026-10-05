@@ -75,6 +75,15 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
         logger.warning("SMTP not configured — skipping email notification for item %d", item.id)
         return False
 
+    # The API only accepts ALERT_RECIPIENTS addresses, but rows saved before that check can hold
+    # any address, so check again before sending. The address itself is not logged.
+    if not settings.is_alert_recipient(item.notify_email):
+        logger.warning(
+            "Recipient for item %d is not in ALERT_RECIPIENTS — skipping email notification",
+            item.id,
+        )
+        return False
+
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"Price Alert: {item.name} — ${result.price:.2f}"

@@ -1,5 +1,7 @@
 """Tests for item CRUD API endpoints."""
 
+from hunter_bargain.config import settings
+
 
 def test_create_item(client):
     """POST /api/v1/items/ creates an item and returns it."""
@@ -82,3 +84,47 @@ def test_delete_item_not_found(client):
     """DELETE /api/v1/items/999 returns 404."""
     resp = client.delete("/api/v1/items/999")
     assert resp.status_code == 404
+
+
+def test_create_item_rejects_recipient_not_in_alert_recipients(client, monkeypatch):
+    """POST with a notify_email outside ALERT_RECIPIENTS returns 422 and stores nothing."""
+    monkeypatch.setattr(settings, "alert_recipients", ["owner@example.com"])
+
+    resp = client.post("/api/v1/items/", json={"name": "Widget", "notify_email": "x@example.net"})
+    assert resp.status_code == 422
+    error = resp.json()["detail"][0]
+    assert error["loc"] == ["body", "notify_email"]
+    assert "not in ALERT_RECIPIENTS" in error["msg"]
+    assert "owner@example.com" not in resp.text  # the error does not reveal the allowed list
+    assert client.get("/api/v1/items/").json() == []
+
+    # The same request with an allowed address succeeds; letter case is ignored.
+    resp = client.post(
+        "/api/v1/items/", json={"name": "Widget", "notify_email": "Owner@example.com"}
+    )
+    assert resp.status_code == 201
+
+
+def test_update_item_rejects_recipient_not_in_alert_recipients(client, monkeypatch):
+    """PATCH with a notify_email outside ALERT_RECIPIENTS returns 422 and keeps the old one."""
+    monkeypatch.setattr(settings, "alert_recipients", ["owner@example.com"])
+    create_resp = client.post(
+        "/api/v1/items/", json={"name": "Widget", "notify_email": "owner@example.com"}
+    )
+    assert create_resp.status_code == 201
+    item_id = create_resp.json()["id"]
+
+    resp = client.patch(f"/api/v1/items/{item_id}", json={"notify_email": "x@example.net"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", "notify_email"]
+    assert client.get(f"/api/v1/items/{item_id}").json()["notify_email"] == "owner@example.com"
+
+
+def test_empty_alert_recipients_rejects_every_address(client, monkeypatch):
+    """With ALERT_RECIPIENTS unset, no address is allowed."""
+    monkeypatch.setattr(settings, "alert_recipients", [])
+
+    resp = client.post(
+        "/api/v1/items/", json={"name": "Widget", "notify_email": "user@example.com"}
+    )
+    assert resp.status_code == 422

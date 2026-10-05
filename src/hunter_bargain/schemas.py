@@ -3,8 +3,22 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, EmailStr, Field
+
+from hunter_bargain.config import settings
+
+
+def _check_alert_recipient(address: str) -> str:
+    """Reject an address outside ALERT_RECIPIENTS; the error does not reveal the allowed ones."""
+    if not settings.is_alert_recipient(address):
+        raise ValueError("address is not in ALERT_RECIPIENTS")
+    return address
+
+
+# A notify_email the API accepts: a valid address listed in ALERT_RECIPIENTS (otherwise 422).
+AlertRecipient = Annotated[EmailStr, AfterValidator(_check_alert_recipient)]
 
 # ---------- Item schemas ----------
 
@@ -17,7 +31,9 @@ class ItemCreate(BaseModel):
     target_price: float | None = Field(
         None, gt=0, description="Alert when price is at or below this"
     )
-    notify_email: EmailStr = Field(..., description="Email address for price alerts")
+    notify_email: AlertRecipient = Field(
+        ..., description="Email address for price alerts; must be in ALERT_RECIPIENTS"
+    )
 
 
 class ItemUpdate(BaseModel):
@@ -26,7 +42,7 @@ class ItemUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     keywords: str | None = None
     target_price: float | None = Field(None, gt=0)
-    notify_email: EmailStr | None = None
+    notify_email: AlertRecipient | None = None
 
 
 class ItemResponse(BaseModel):
