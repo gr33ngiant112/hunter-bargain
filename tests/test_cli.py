@@ -242,67 +242,91 @@ class TestCheck:
         assert "Google Shopping" in result.output
         assert "-> https://example.com" in result.output
 
-    def test_check_all(self, runner: CliRunner):
-        check_results = [
-            {
-                "item_id": 1,
-                "item_name": "Item A",
-                "lowest_price": 10.00,
-                "lowest_source": "Bing",
-                "lowest_url": "https://example.com/item-a",
-                "results_count": 1,
-                "records": [],
-            },
-            {
-                "item_id": 2,
-                "item_name": "Item B",
-                "lowest_price": None,
-                "lowest_source": None,
-                "lowest_url": None,
-                "results_count": 0,
-                "records": [],
-            },
-        ]
+    def test_check_without_id_starts_a_background_check_of_all_items(self, runner: CliRunner):
+        """#6: check-all answers 202 at once; its results go to the log and alert emails."""
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
-            mock_req.return_value = _mock_response(200, check_results)
+            mock_req.return_value = _mock_response(202, {"status": "started"})
             result = runner.invoke(cli, ["check"])
 
         assert result.exit_code == 0
-        assert "Item A: $10.00" in result.output
-        assert "-> https://example.com/item-a" in result.output
-        assert "Item B: no results found" in result.output
-        assert result.output.count("->") == 1
+        assert mock_req.call_args[0] == ("POST", "http://localhost:8000/api/v1/prices/check-all")
+        assert result.output == (
+            "Started a price check of all items in the background.\n"
+            "Alerts are emailed as usual; run 'hb check ITEM_ID' to see one item's prices.\n"
+        )
 
-    def test_check_strips_control_characters(self, runner: CliRunner):
-        check_results = [
-            {
-                "item_id": 1,
-                "item_name": WITH_CONTROLS,
-                "lowest_price": 279.99,
-                "lowest_source": f"Shop {WITH_CONTROLS}",
-                "lowest_url": f"https://example.com/{WITH_CONTROLS}",
-                "results_count": 3,
-                "records": [],
-            },
-            {
-                "item_id": 2,
-                "item_name": f"Other {WITH_CONTROLS}",
-                "lowest_price": None,
-                "lowest_source": None,
-                "lowest_url": None,
-                "results_count": 0,
-                "records": [],
-            },
-        ]
+    def test_check_without_id_while_a_check_of_all_items_runs(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
-            mock_req.return_value = _mock_response(200, check_results)
+            mock_req.return_value = _mock_response(
+                409, {"detail": "A price check of all items is already running"}
+            )
             result = runner.invoke(cli, ["check"])
+
+        assert result.exit_code == 1
+        assert result.output == "A price check of all items is already running.\n"
+
+    def test_check_single_item_without_results(self, runner: CliRunner):
+        check_result = {
+            "item_id": 2,
+            "item_name": "Item B",
+            "lowest_price": None,
+            "lowest_source": None,
+            "lowest_url": None,
+            "results_count": 0,
+            "records": [],
+            "engine_errors": [],
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "2"])
+
+        assert result.exit_code == 0
+        assert result.output == "  Item B: no results found\n"
+
+    @pytest.mark.parametrize(
+        ("check_result", "expected_lines"),
+        [
+            (
+                {
+                    "item_id": 1,
+                    "item_name": WITH_CONTROLS,
+                    "lowest_price": 279.99,
+                    "lowest_source": f"Shop {WITH_CONTROLS}",
+                    "lowest_url": f"https://example.com/{WITH_CONTROLS}",
+                    "results_count": 3,
+                    "records": [],
+                },
+                [
+                    f"  {CLEANED}: $279.99 (Shop {CLEANED}) — 3 result(s)\n",
+                    f"    -> https://example.com/{CLEANED}\n",
+                ],
+            ),
+            (
+                {
+                    "item_id": 2,
+                    "item_name": f"Other {WITH_CONTROLS}",
+                    "lowest_price": None,
+                    "lowest_source": None,
+                    "lowest_url": None,
+                    "results_count": 0,
+                    "records": [],
+                },
+                [f"  Other {CLEANED}: no results found\n"],
+            ),
+        ],
+        ids=["price", "no-results"],
+    )
+    def test_check_strips_control_characters(
+        self, runner: CliRunner, check_result: dict, expected_lines: list[str]
+    ):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", str(check_result["item_id"])])
 
         assert result.exit_code == 0
         assert _control_characters(result.output) == set()
-        assert f"  {CLEANED}: $279.99 (Shop {CLEANED}) — 3 result(s)\n" in result.output
-        assert f"    -> https://example.com/{CLEANED}\n" in result.output
-        assert f"  Other {CLEANED}: no results found\n" in result.output
+        for line in expected_lines:
+            assert line in result.output
 
     def test_check_shows_merchant_next_to_engine(self, runner: CliRunner):
         check_result = {
@@ -375,40 +399,27 @@ class TestCheck:
             "    engine error: bing_shopping: request failed (ConnectionError)\n"
         )
 
-    def test_check_all_shows_engine_errors_per_item(self, runner: CliRunner):
+    def test_check_shows_engine_errors_next_to_a_price(self, runner: CliRunner):
         """An engine error shows under its item, also when the other engine found a price."""
-        check_results = [
-            {
-                "item_id": 1,
-                "item_name": "Item A",
-                "lowest_price": 10.00,
-                "lowest_source": "bing_shopping",
-                "lowest_url": "https://example.com/item-a",
-                "results_count": 1,
-                "records": [],
-                "engine_errors": ["google_shopping: HTTP 429, SerpAPI searches used up"],
-            },
-            {
-                "item_id": 2,
-                "item_name": "Item B",
-                "lowest_price": None,
-                "lowest_source": None,
-                "lowest_url": None,
-                "results_count": 0,
-                "records": [],
-                "engine_errors": [],
-            },
-        ]
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 10.00,
+            "lowest_source": "bing_shopping",
+            "lowest_url": "https://example.com/item-a",
+            "results_count": 1,
+            "records": [],
+            "engine_errors": ["google_shopping: HTTP 429, SerpAPI searches used up"],
+        }
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
-            mock_req.return_value = _mock_response(200, check_results)
-            result = runner.invoke(cli, ["check"])
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
 
         assert result.exit_code == 0
         assert result.output == (
             "  Item A: $10.00 (bing_shopping) — 1 result(s)\n"
             "    -> https://example.com/item-a\n"
             "    engine error: google_shopping: HTTP 429, SerpAPI searches used up\n"
-            "  Item B: no results found\n"
         )
 
     def test_check_strips_control_characters_from_engine_errors(self, runner: CliRunner):
@@ -444,6 +455,49 @@ class TestCheck:
 
         assert result.exit_code == 1
         assert "not found" in result.output
+
+
+class TestRequestErrors:
+    """#6: the CLI's own request failures end with a message and exit 1, not a traceback."""
+
+    def test_timeout_prints_a_clear_error(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request", side_effect=httpx.ReadTimeout("timed out")):
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert result.output == (
+            "Error: no answer from http://localhost:8000/api/v1/prices/check/1 within 60 s\n"
+            "The server may still finish the request. Use --timeout to wait longer.\n"
+        )
+
+    def test_other_transport_error_prints_a_clear_error(self, runner: CliRunner):
+        error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        with patch("hunter_bargain.cli.httpx.request", side_effect=error):
+            result = runner.invoke(cli, ["ls"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert result.output == (
+            "Error: request to http://localhost:8000/api/v1/items/ failed (RemoteProtocolError)\n"
+        )
+
+    def test_default_timeout_covers_a_check_of_both_engines(self, runner: CliRunner):
+        """The server allows each of the two engines 20 s, so 30 s could cut off a slow check."""
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [])
+            result = runner.invoke(cli, ["ls"])
+
+        assert result.exit_code == 0
+        assert mock_req.call_args.kwargs["timeout"] == 60
+
+    def test_timeout_option_sets_the_request_timeout(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [])
+            result = runner.invoke(cli, ["--timeout", "120", "ls"])
+
+        assert result.exit_code == 0
+        assert mock_req.call_args.kwargs["timeout"] == 120
 
 
 class TestCustomUrl:
