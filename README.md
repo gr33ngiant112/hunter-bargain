@@ -176,6 +176,7 @@ curl -X POST http://localhost:8000/api/v1/items/ \
 
 `notify_email` must be one of the `ALERT_RECIPIENTS` addresses; create and update return 422 for any other address.
 `name` and `keywords` must not contain control characters such as line breaks, tabs or ESC; create and update return 422 if they do.
+`name` must not be blank (whitespace only), and an update cannot set `name` or `notify_email` to null; `target_price` must be a finite number above 0 and at most 1,000,000. Create and update return 422 otherwise.
 
 ### Example: Trigger a price check
 
