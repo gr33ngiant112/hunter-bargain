@@ -258,6 +258,7 @@ All configuration is via environment variables (`.env` file):
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks |
 | `APP_HOST` | `0.0.0.0` | Server bind host |
 | `APP_PORT` | `8000` | Server bind port |
+| `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
 | `LOG_LEVEL` | `info` | Logging level |
 
 ## Deployment
@@ -271,9 +272,11 @@ docker compose up --build -d
 - Health check: `curl http://localhost:8000/health`
 - SQLite data persisted via Docker volume (`app-data`)
 - Container auto-restarts on failure
-- The port is published on 127.0.0.1 only. On the host, use `curl http://localhost:8000/...` or run the CLI
-  inside the container: `docker compose exec app hb ls`. For access from other machines, put a reverse
-  proxy with authentication in front; the API has no authentication of its own yet (#1).
+- By default the port is published on 127.0.0.1 only. On the host, use `curl http://localhost:8000/...` or
+  run the CLI inside the container: `docker compose exec app hb ls`. To reach the API from other machines
+  on your network, set `HB_BIND_ADDR=0.0.0.0` (or the host's LAN address) in `.env` and run
+  `docker compose up -d`. The API has no authentication of its own yet (#1), so do this only on a network
+  you trust, or put a reverse proxy with authentication in front.
 - To pick up base-image and dependency fixes, rebuild without the cache:
   `docker compose build --pull --no-cache && docker compose up -d`
 

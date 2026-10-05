@@ -5,8 +5,9 @@ services:
       dockerfile: Dockerfile
     container_name: hunter-bargain-app
     ports:
-      # Loopback only: reach the API from this host, or put a reverse proxy with auth in front for LAN use.
-      - "127.0.0.1:${APP_PORT:-8000}:8000"
+      # Loopback by default, so only this host can reach the API. HB_BIND_ADDR=0.0.0.0 (or this
+      # host's LAN address) publishes it on the network; the API has no authentication of its own.
+      - "${HB_BIND_ADDR:-127.0.0.1}:${APP_PORT:-8000}:8000"
     env_file:
       - .env
     volumes:
