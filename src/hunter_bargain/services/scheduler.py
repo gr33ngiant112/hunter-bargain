@@ -8,6 +8,7 @@ import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import select
 
 from hunter_bargain.config import settings
 from hunter_bargain.db import SessionLocal
@@ -23,32 +24,43 @@ scheduler = BackgroundScheduler()
 def _scheduled_price_check() -> None:
     """Job function: check prices for every tracked item.
 
-    Creates its own database session since this runs in a background thread,
-    outside of the FastAPI request lifecycle.
+    Runs in a background thread, outside any request, so it opens its own sessions: one to list
+    the item ids, then one per item. An item deleted during the run is skipped, and a failed
+    check rolls back only its own session, so neither stops the rest of the run.
     """
     logger.info("Scheduled price check starting...")
-    db = SessionLocal()
-    try:
-        items = db.query(Item).all()
-        if not items:
-            logger.info("No items to check — skipping.")
-            return
+    with SessionLocal() as db:
+        item_ids = list(db.scalars(select(Item.id).order_by(Item.id)))
+    if not item_ids:
+        logger.info("No items to check — skipping.")
+        return
 
-        for item in items:
-            try:
-                result = run_price_check(item=item, db=db)
-                logger.info(
-                    "Item %d (%r): %d results, lowest=$%s",
-                    item.id,
-                    item.name,
-                    result.results_count,
-                    f"{result.lowest_price:.2f}" if result.lowest_price else "N/A",
-                )
-            except Exception:
-                logger.exception("Price check failed for item %d (%r)", item.id, item.name)
-    finally:
-        db.close()
+    for item_id in item_ids:
+        _check_item(item_id)
     logger.info("Scheduled price check complete.")
+
+
+def _check_item(item_id: int) -> None:
+    """Check one item in a session of its own; on failure, log it and roll back."""
+    with SessionLocal() as db:
+        item = db.get(Item, item_id)
+        if item is None:
+            logger.info("Item %d was deleted before its check — skipping.", item_id)
+            return
+        # Read now: after a failed commit the item's attributes can no longer be loaded.
+        name = item.name
+        try:
+            result = run_price_check(item=item, db=db)
+            logger.info(
+                "Item %d (%r): %d results, lowest=$%s",
+                item_id,
+                name,
+                result.results_count,
+                f"{result.lowest_price:.2f}" if result.lowest_price else "N/A",
+            )
+        except Exception:
+            db.rollback()
+            logger.exception("Price check failed for item %d (%r)", item_id, name)
 
 
 def start_scheduler() -> None:
