@@ -47,9 +47,11 @@ def smtp_settings(monkeypatch):
     """Real Settings with fake SMTP values, patched into the notifier.
 
     `_env_file=None` keeps any local .env out of the tests. SMTP_TIMEOUT is set through
-    the environment so the tests also cover the variable name.
+    the environment so the tests also cover the variable name. ALERT_RECIPIENTS allows
+    `_item()`'s address.
     """
     monkeypatch.setenv("SMTP_TIMEOUT", "12.5")
+    monkeypatch.setenv("ALERT_RECIPIENTS", "user@example.com")
     fake = Settings(
         _env_file=None,
         smtp_host="smtp.example.com",
@@ -180,6 +182,20 @@ class TestSendPriceAlert:
         assert "Failed to send price alert for item 1" in caplog.text
         assert "SMTPAuthenticationError" in caplog.text
         assert FAKE_PASSWORD not in caplog.text
+
+    def test_skips_recipient_not_in_alert_recipients(self, smtp_settings, smtp_classes, caplog):
+        """Rows saved before the allowlist existed may hold any address: skip, log, no address."""
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        item = _item()
+        item.notify_email = "someone@example.net"
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_price_alert(item=item, result=_result()) is False
+
+        smtp_cls.assert_not_called()
+        smtp_ssl_cls.assert_not_called()
+        assert "Recipient for item 1 is not in ALERT_RECIPIENTS" in caplog.text
+        assert "someone@example.net" not in caplog.text
 
 
 class TestSmtpSettings:

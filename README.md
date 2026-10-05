@@ -61,6 +61,7 @@ SMTP_PORT=587
 SMTP_USER=you@gmail.com
 SMTP_PASSWORD=your-app-password
 EMAIL_FROM=you@gmail.com
+ALERT_RECIPIENTS=you@gmail.com
 ```
 
 ### 2. Start
@@ -109,7 +110,7 @@ Output:
 The `hb` command manages tracked items through the running API server.
 
 ```bash
-# Add an item to track
+# Add an item to track (the -e address must be in the server's ALERT_RECIPIENTS)
 hb add "iPhone 16 Pro" -e you@example.com -t 899.99 -k "256GB,black,titanium"
 
 # List all tracked items
@@ -172,6 +173,8 @@ curl -X POST http://localhost:8000/api/v1/items/ \
     "notify_email": "deals@example.com"
   }'
 ```
+
+`notify_email` must be one of the `ALERT_RECIPIENTS` addresses; create and update return 422 for any other address.
 
 ### Example: Trigger a price check
 
@@ -250,6 +253,7 @@ All configuration is via environment variables (`.env` file):
 | `SMTP_USER` | — | SMTP login username |
 | `SMTP_PASSWORD` | — | SMTP login password |
 | `EMAIL_FROM` | `SMTP_USER` | From address for alerts |
+| `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks |
 | `APP_HOST` | `0.0.0.0` | Server bind host |
 | `APP_PORT` | `8000` | Server bind port |
