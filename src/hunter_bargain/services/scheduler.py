@@ -38,14 +38,14 @@ def _scheduled_price_check() -> None:
             try:
                 result = run_price_check(item=item, db=db)
                 logger.info(
-                    "Item %d (%s): %d results, lowest=$%s",
+                    "Item %d (%r): %d results, lowest=$%s",
                     item.id,
                     item.name,
                     result.results_count,
                     f"{result.lowest_price:.2f}" if result.lowest_price else "N/A",
                 )
             except Exception:
-                logger.exception("Price check failed for item %d (%s)", item.id, item.name)
+                logger.exception("Price check failed for item %d (%r)", item.id, item.name)
     finally:
         db.close()
     logger.info("Scheduled price check complete.")

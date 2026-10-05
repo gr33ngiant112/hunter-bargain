@@ -3,11 +3,14 @@
 Sends price alerts via SMTP when a tracked item hits its target price.
 """
 
+import html
 import logging
 import smtplib
 import ssl
+import unicodedata
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from urllib.parse import urlparse
 
 from hunter_bargain.config import settings
 from hunter_bargain.models import Item
@@ -15,14 +18,49 @@ from hunter_bargain.services.engines.base import SearchResult
 
 logger = logging.getLogger(__name__)
 
+# The alert links to a listing URL only with one of these schemes.
+_LINK_SCHEMES = frozenset({"http", "https"})
+
+
+def _escape(value: object) -> str:
+    """HTML-escape a value for element text or a double-quoted attribute value."""
+    return html.escape(str(value), quote=True)
+
+
+def _link_url(url: str | None) -> str | None:
+    """Return the listing URL if the alert may link to it, otherwise None.
+
+    Listing URLs come from third-party shopping results. Only an http(s) URL gets a link:
+    javascript:, data: or relative URLs get none. Neither does a URL with control characters
+    (CR or LF would start a new line in the plain-text part) or one that does not parse.
+    """
+    if not url or any(unicodedata.category(c) == "Cc" for c in url):
+        return None
+    try:
+        scheme = urlparse(url).scheme
+    except ValueError:  # e.g. an unclosed "[" in the host
+        return None
+    return url if scheme in _LINK_SCHEMES else None
+
 
 def _build_html_body(item: Item, result: SearchResult) -> str:
-    """Build the HTML email body for a price alert."""
+    """Build the HTML email body for a price alert.
+
+    The item name comes from an API caller and the title, currency, source and URL from a
+    third-party listing, so every value is HTML-escaped before it goes into the markup.
+    """
+    name = _escape(item.name)
+    title = _escape(result.title)
+    price = _escape(f"${result.price:.2f} {result.currency}")
+    target = _escape(f"${item.target_price:.2f}")
+    source = _escape(result.source)
+
     link_html = ""
-    if result.url:
+    url = _link_url(result.url)
+    if url:
         link_html = (
             '<p style="text-align: center; margin: 24px 0;">'
-            f'<a href="{result.url}" '
+            f'<a href="{_escape(url)}" '
             'style="display: inline-block; background-color: #2d8a4e; color: #ffffff; '
             "padding: 14px 32px; border-radius: 8px; text-decoration: none; "
             'font-size: 16px; font-weight: 700;">'
@@ -33,26 +71,26 @@ def _build_html_body(item: Item, result: SearchResult) -> str:
     return f"""
     <html>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2d8a4e;">Price Alert: {item.name}</h2>
-        <p>Great news! We found <strong>{item.name}</strong> at or below your target price.</p>
+        <h2 style="color: #2d8a4e;">Price Alert: {name}</h2>
+        <p>Great news! We found <strong>{name}</strong> at or below your target price.</p>
         <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Product</td>
-                <td style="padding: 8px; border: 1px solid #ddd;">{result.title}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{title}</td>
             </tr>
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Price</td>
                 <td style="padding: 8px; border: 1px solid #ddd; color: #2d8a4e; font-size: 1.2em;">
-                    ${result.price:.2f} {result.currency}
+                    {price}
                 </td>
             </tr>
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Target</td>
-                <td style="padding: 8px; border: 1px solid #ddd;">${item.target_price:.2f}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{target}</td>
             </tr>
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Source</td>
-                <td style="padding: 8px; border: 1px solid #ddd;">{result.source}</td>
+                <td style="padding: 8px; border: 1px solid #ddd;">{source}</td>
             </tr>
         </table>
         {link_html}
@@ -90,13 +128,13 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
         msg["From"] = settings.email_from or settings.smtp_user
         msg["To"] = item.notify_email
 
-        # Plain text fallback
+        # Plain text fallback; like the HTML part, it shows the link only for an http(s) URL.
         plain = (
             f"Price Alert: {item.name}\n"
             f"Price: ${result.price:.2f} {result.currency}\n"
             f"Target: ${item.target_price:.2f}\n"
             f"Source: {result.source}\n"
-            f"Link: {result.url or 'N/A'}\n"
+            f"Link: {_link_url(result.url) or 'N/A'}\n"
         )
         msg.attach(MIMEText(plain, "plain"))
         msg.attach(MIMEText(_build_html_body(item, result), "html"))

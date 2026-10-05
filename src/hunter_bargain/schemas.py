@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
 from hunter_bargain.config import settings
 
@@ -19,6 +20,20 @@ def _check_alert_recipient(address: str) -> str:
 
 # A notify_email the API accepts: a valid address listed in ALERT_RECIPIENTS (otherwise 422).
 AlertRecipient = Annotated[EmailStr, AfterValidator(_check_alert_recipient)]
+
+
+def _reject_control_characters(value: str | None) -> str | None:
+    """Reject text with control characters (Unicode category Cc: CR, LF, ESC, ...).
+
+    Item names and keywords end up in alert email, log lines and CLI output, where these
+    characters could split log records or hide terminal output. Shared by ItemCreate and
+    ItemUpdate as a field validator, so it runs after the fields' own length checks and
+    their error messages stay the same.
+    """
+    if value is not None and any(unicodedata.category(c) == "Cc" for c in value):
+        raise ValueError("must not contain control characters")
+    return value
+
 
 # ---------- Item schemas ----------
 
@@ -35,6 +50,8 @@ class ItemCreate(BaseModel):
         ..., description="Email address for price alerts; must be in ALERT_RECIPIENTS"
     )
 
+    _plain_text = field_validator("name", "keywords")(_reject_control_characters)
+
 
 class ItemUpdate(BaseModel):
     """Schema for updating an existing tracked item (all fields optional)."""
@@ -43,6 +60,8 @@ class ItemUpdate(BaseModel):
     keywords: str | None = None
     target_price: float | None = Field(None, gt=0)
     notify_email: AlertRecipient | None = None
+
+    _plain_text = field_validator("name", "keywords")(_reject_control_characters)
 
 
 class ItemResponse(BaseModel):
