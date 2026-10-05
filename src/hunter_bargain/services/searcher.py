@@ -241,7 +241,7 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
 
     if lowest and item.target_price and lowest.price <= item.target_price:
         logger.info(
-            "Target met for item %d (%s): $%.2f <= $%.2f",
+            "Target met for item %d (%r): $%.2f <= $%.2f",
             item.id,
             item.name,
             lowest.price,

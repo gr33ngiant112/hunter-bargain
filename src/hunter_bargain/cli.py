@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import unicodedata
 from typing import Any
 
 import click
@@ -28,14 +29,23 @@ def _request(
     return resp
 
 
+def _clean(value: object) -> str:
+    """Return the value as text without control characters (Unicode category Cc).
+
+    Stored item names and keywords, and the sources and URLs of third-party listings, can hold
+    ESC, CR or other control characters that would let them hide or rewrite terminal output.
+    """
+    return "".join(c for c in str(value) if unicodedata.category(c) != "Cc")
+
+
 def _print_item(item: dict[str, Any]) -> None:
     target = f"${item['target_price']:.2f}" if item.get("target_price") else "—"
     keywords = item.get("keywords") or "—"
     click.echo(
-        f"  [{item['id']}]  {item['name']}"
+        f"  [{item['id']}]  {_clean(item['name'])}"
         f"  |  target: {target}"
-        f"  |  keywords: {keywords}"
-        f"  |  email: {item['notify_email']}"
+        f"  |  keywords: {_clean(keywords)}"
+        f"  |  email: {_clean(item['notify_email'])}"
     )
 
 
@@ -80,7 +90,7 @@ def add(
 
     if resp.status_code == 201:
         item = resp.json()
-        click.secho(f"Added item #{item['id']}: {item['name']}", fg="green")
+        click.secho(f"Added item #{item['id']}: {_clean(item['name'])}", fg="green")
         _print_item(item)
     elif resp.status_code == 422:
         errors = resp.json().get("detail", [])
@@ -106,7 +116,7 @@ def remove(ctx: click.Context, item_id: int, yes: bool) -> None:
             click.secho(f"Item {item_id} not found.", fg="red", err=True)
             sys.exit(1)
         item = resp.json()
-        if not click.confirm(f"Remove '{item['name']}' (#{item_id})?"):
+        if not click.confirm(f"Remove '{_clean(item['name'])}' (#{item_id})?"):
             click.echo("Cancelled.")
             return
 
@@ -216,15 +226,15 @@ def check(ctx: click.Context, item_id: int | None) -> None:
     results = resp.json() if item_id is None else [resp.json()]
 
     for result in results:
-        name = result["item_name"]
+        name = _clean(result["item_name"])
         count = result["results_count"]
         lowest = result.get("lowest_price")
-        source = result.get("lowest_source", "")
+        source = _clean(result.get("lowest_source", ""))
         lowest_url = result.get("lowest_url")
 
         if lowest is not None:
             click.echo(f"  {name}: ${lowest:.2f} ({source}) — {count} result(s)")
             if lowest_url:
-                click.echo(f"    -> {lowest_url}")
+                click.echo(f"    -> {_clean(lowest_url)}")
         else:
             click.secho(f"  {name}: no results found", fg="yellow")

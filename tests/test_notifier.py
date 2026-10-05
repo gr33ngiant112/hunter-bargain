@@ -3,6 +3,7 @@
 import logging
 import smtplib
 import ssl
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,6 +14,10 @@ from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.notifier import send_price_alert
 
 FAKE_PASSWORD = "fake-pass-for-test"
+
+# Harmless markup markers (angle brackets, quotes, an ampersand) and their HTML-escaped form.
+MARKUP = "Widget <b>\"Pro\"</b> & 'Co'"
+ESCAPED_MARKUP = "Widget &lt;b&gt;&quot;Pro&quot;&lt;/b&gt; &amp; &#x27;Co&#x27;"
 
 
 def _item() -> MagicMock:
@@ -34,6 +39,17 @@ def _server(smtp_cls: MagicMock) -> MagicMock:
     smtp_cls.return_value.__enter__ = MagicMock(return_value=server)
     smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
     return server
+
+
+def _sent_parts(server: MagicMock) -> tuple[str, str]:
+    """Decode the plain-text and HTML parts of the message sent through `server`."""
+    message = server.send_message.call_args.args[0]
+    texts = {
+        part.get_content_type(): part.get_payload(decode=True).decode(part.get_content_charset())
+        for part in message.walk()
+        if not part.is_multipart()
+    }
+    return texts["text/plain"], texts["text/html"]
 
 
 def _assert_verifying(context: object) -> None:
@@ -196,6 +212,67 @@ class TestSendPriceAlert:
         smtp_ssl_cls.assert_not_called()
         assert "Recipient for item 1 is not in ALERT_RECIPIENTS" in caplog.text
         assert "someone@example.net" not in caplog.text
+
+
+class TestAlertContent:
+    """Item names come from API callers and the other values from third-party listings.
+
+    None of them may add markup or a non-http(s) link to the alert.
+    """
+
+    @pytest.mark.parametrize("field", ["name", "title", "source", "currency"])
+    def test_html_part_escapes_markup(self, smtp_settings, smtp_classes, field):
+        item, result = _item(), _result()
+        if field == "name":
+            item.name = MARKUP
+        else:
+            result = replace(result, **{field: MARKUP})
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=item, result=result) is True
+
+        _, html_part = _sent_parts(server)
+        assert ESCAPED_MARKUP in html_part
+        assert MARKUP not in html_part
+        assert "<b>" not in html_part
+
+    @pytest.mark.parametrize("scheme", ["http", "https", "HTTPS"])
+    def test_http_url_is_linked_and_escaped_in_href(self, smtp_settings, smtp_classes, scheme):
+        url = f'{scheme}://example.com/widget?a=1&b="2"'
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), url=url)) is True
+
+        plain, html_part = _sent_parts(server)
+        assert f'href="{scheme}://example.com/widget?a=1&amp;b=&quot;2&quot;"' in html_part
+        assert "Buy Now" in html_part
+        assert f"Link: {url}" in plain
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "javascript:void(0)",
+            "JavaScript:void(0)",
+            "data:text/plain,widget",
+            "ftp://example.com/widget",
+            "//example.com/widget",
+            "example.com/widget",
+            "https://example.com/widget\r\nPrice: $0.01",
+            "http://[example.com/widget",
+        ],
+    )
+    def test_other_url_gets_no_link(self, smtp_settings, smtp_classes, url):
+        """No Buy Now link and "Link: N/A" for a URL that is not a well-formed http(s) URL."""
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), url=url)) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "<a " not in html_part
+        assert "Buy Now" not in html_part
+        assert "Link: N/A" in plain
+        assert url not in plain
+        assert url not in html_part
 
 
 class TestSmtpSettings:

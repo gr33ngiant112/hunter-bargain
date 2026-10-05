@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from unittest.mock import patch
 
 import httpx
@@ -18,10 +19,20 @@ FAKE_ITEM = {
     "updated_at": "2026-03-01T00:00:00",
 }
 
+# Colour codes (ESC [ and the one-byte C1 CSI), CR/LF, BEL and backspace: harmless stand-ins
+# for control characters in a stored name or a listing field, and the text left without them.
+WITH_CONTROLS = "Sony\x1b[31m WH\x9b31m-1000XM5\r\nFake\x07 line\x08"
+CLEANED = "Sony[31m WH31m-1000XM5Fake line"
+
 
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+def _control_characters(text: str) -> set[str]:
+    """Control characters in CLI output, apart from the newlines that end its lines."""
+    return {c for c in text if unicodedata.category(c) == "Cc"} - {"\n"}
 
 
 def _mock_response(status_code: int, json_data=None) -> httpx.Response:
@@ -88,6 +99,15 @@ class TestAdd:
         assert "target_price" not in payload
         assert "keywords" not in payload
 
+    def test_add_strips_control_characters(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(201, {**FAKE_ITEM, "name": WITH_CONTROLS})
+            result = runner.invoke(cli, ["add", "Sony WH-1000XM5", "-e", "user@example.com"])
+
+        assert result.exit_code == 0
+        assert _control_characters(result.output) == set()
+        assert f"Added item #1: {CLEANED}\n" in result.output
+
 
 class TestRemove:
     def test_remove_with_confirm(self, runner: CliRunner):
@@ -126,6 +146,15 @@ class TestRemove:
         assert result.exit_code == 0
         assert "Cancelled" in result.output
 
+    def test_remove_prompt_strips_control_characters(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, {**FAKE_ITEM, "name": WITH_CONTROLS})
+            result = runner.invoke(cli, ["rm", "1"], input="n\n")
+
+        assert result.exit_code == 0
+        assert _control_characters(result.output) == set()
+        assert f"Remove '{CLEANED}' (#1)?" in result.output
+
 
 class TestList:
     def test_list_items(self, runner: CliRunner):
@@ -145,6 +174,25 @@ class TestList:
 
         assert result.exit_code == 0
         assert "No items tracked" in result.output
+
+    def test_list_strips_control_characters(self, runner: CliRunner):
+        item = {
+            **FAKE_ITEM,
+            "name": WITH_CONTROLS,
+            "keywords": WITH_CONTROLS,
+            "notify_email": "user@example.com\x07",
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [item])
+            # color=True keeps escape sequences in the output, as when printing to a terminal.
+            result = runner.invoke(cli, ["ls"], color=True)
+
+        assert result.exit_code == 0
+        assert _control_characters(result.output) == set()
+        assert (
+            f"  [1]  {CLEANED}  |  target: $299.99  |  keywords: {CLEANED}"
+            "  |  email: user@example.com\n"
+        ) in result.output
 
 
 class TestUpdate:
@@ -224,6 +272,37 @@ class TestCheck:
         assert "-> https://example.com/item-a" in result.output
         assert "Item B: no results found" in result.output
         assert result.output.count("->") == 1
+
+    def test_check_strips_control_characters(self, runner: CliRunner):
+        check_results = [
+            {
+                "item_id": 1,
+                "item_name": WITH_CONTROLS,
+                "lowest_price": 279.99,
+                "lowest_source": f"Shop {WITH_CONTROLS}",
+                "lowest_url": f"https://example.com/{WITH_CONTROLS}",
+                "results_count": 3,
+                "records": [],
+            },
+            {
+                "item_id": 2,
+                "item_name": f"Other {WITH_CONTROLS}",
+                "lowest_price": None,
+                "lowest_source": None,
+                "lowest_url": None,
+                "results_count": 0,
+                "records": [],
+            },
+        ]
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_results)
+            result = runner.invoke(cli, ["check"])
+
+        assert result.exit_code == 0
+        assert _control_characters(result.output) == set()
+        assert f"  {CLEANED}: $279.99 (Shop {CLEANED}) — 3 result(s)\n" in result.output
+        assert f"    -> https://example.com/{CLEANED}\n" in result.output
+        assert f"  Other {CLEANED}: no results found\n" in result.output
 
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
