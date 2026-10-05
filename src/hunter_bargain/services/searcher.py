@@ -254,6 +254,7 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
         item_name=item.name,
         lowest_price=lowest.price if lowest else None,
         lowest_source=lowest.source if lowest else None,
+        lowest_merchant=lowest.merchant if lowest else None,
         lowest_url=lowest.url if lowest else None,
         results_count=len(relevant_results),
         records=[PriceRecordResponse.model_validate(r) for r in records],

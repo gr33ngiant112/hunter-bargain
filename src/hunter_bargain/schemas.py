@@ -106,6 +106,8 @@ class PriceCheckResult(BaseModel):
     item_name: str
     lowest_price: float | None
     lowest_source: str | None
+    # Seller of the lowest-priced listing (Google Shopping source, Bing seller); not stored.
+    lowest_merchant: str | None = None
     lowest_url: str | None
     results_count: int
     records: list[PriceRecordResponse]
