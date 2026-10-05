@@ -35,6 +35,29 @@ def _reject_control_characters(value: str | None) -> str | None:
     return value
 
 
+def _reject_blank(value: str | None) -> str | None:
+    """Reject a whitespace-only name: it has no search words, so every listing would match it."""
+    if value is not None and not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+def _reject_null(value: object) -> object:
+    """Reject an explicit null; a PATCH leaves a field out to keep its value.
+
+    ItemUpdate's fields default to None so that a PATCH can omit them, but the name and
+    notify_email columns are NOT NULL, and a null there failed the database write with a 500.
+    """
+    if value is None:
+        raise ValueError("must not be null")
+    return value
+
+
+# A target above this is rejected: the relevance filter drops listings under 10% of the target,
+# so an absurd target, like a NaN or infinite one, would never alert.
+MAX_TARGET_PRICE = 1_000_000
+
+
 # ---------- Item schemas ----------
 
 
@@ -44,13 +67,18 @@ class ItemCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255, description="Product name to search for")
     keywords: str | None = Field(None, description="Extra search keywords to refine results")
     target_price: float | None = Field(
-        None, gt=0, description="Alert when price is at or below this"
+        None,
+        gt=0,
+        le=MAX_TARGET_PRICE,
+        allow_inf_nan=False,
+        description="Alert when price is at or below this",
     )
     notify_email: AlertRecipient = Field(
         ..., description="Email address for price alerts; must be in ALERT_RECIPIENTS"
     )
 
     _plain_text = field_validator("name", "keywords")(_reject_control_characters)
+    _searchable = field_validator("name")(_reject_blank)
 
 
 class ItemUpdate(BaseModel):
@@ -58,10 +86,12 @@ class ItemUpdate(BaseModel):
 
     name: str | None = Field(None, min_length=1, max_length=255)
     keywords: str | None = None
-    target_price: float | None = Field(None, gt=0)
+    target_price: float | None = Field(None, gt=0, le=MAX_TARGET_PRICE, allow_inf_nan=False)
     notify_email: AlertRecipient | None = None
 
     _plain_text = field_validator("name", "keywords")(_reject_control_characters)
+    _searchable = field_validator("name")(_reject_blank)
+    _required = field_validator("name", "notify_email")(_reject_null)
 
 
 class ItemResponse(BaseModel):
