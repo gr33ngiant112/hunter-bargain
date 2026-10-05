@@ -1,4 +1,4 @@
-"""The SerpAPI key stays out of logs (#5).
+"""The SerpAPI key stays out of logs and engine errors (#5).
 
 No test here attaches a logging filter to pytest's caplog handler. The app's own
 logging setup runs when hunter_bargain.main is imported, as uvicorn imports it,
@@ -12,25 +12,21 @@ import io
 import json
 import logging
 import os
-import socket
 import subprocess
 import sys
-import threading
-from collections.abc import Iterator
-from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, override
-from urllib.parse import parse_qs, urlsplit
+from unittest.mock import patch
 
 import pytest
 import requests
 from pydantic import SecretStr
-from serpapi import GoogleSearch
 from uvicorn.logging import AccessFormatter
 
 from hunter_bargain.config import Settings, settings
+from hunter_bargain.models import Item
+from hunter_bargain.services.engines import base
 from hunter_bargain.services.engines.bing import BingShoppingEngine
 from hunter_bargain.services.engines.google import GoogleShoppingEngine
+from hunter_bargain.services.searcher import run_price_check
 
 # Import the app module as uvicorn does; that runs the app's logging setup.
 importlib.import_module("hunter_bargain.main")
@@ -38,16 +34,13 @@ importlib.import_module("hunter_bargain.main")
 FAKE_KEY = "fake-serpapi-key-for-tests"
 ENGINES = [GoogleShoppingEngine, BingShoppingEngine]
 
-
-@dataclass
-class StubSerpApi:
-    url: str
-    queries: list[dict[str, list[str]]]
-
-
-def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
-    monkeypatch.setattr(GoogleSearch, "BACKEND", url)
-    monkeypatch.setenv("no_proxy", "127.0.0.1")
+# SerpAPI's documented error responses, https://serpapi.com/api-status-and-error-codes (fetched
+# 2026-10-05): "Error for invalid API key" and "Error for no searches remaining".
+INVALID_KEY = (
+    401,
+    {"error": "Invalid API key. Your API key should be here: https://serpapi.com/manage-api-key"},
+)
+NO_SEARCHES_LEFT = (429, {"error": "Your account has run out of searches."})
 
 
 @pytest.fixture
@@ -57,60 +50,41 @@ def fake_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "serpapi_key", Settings(_env_file=None).serpapi_key)
 
 
-@pytest.fixture
-def refused_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """SerpAPI on a 127.0.0.1 port that is bound but not listening: connections are refused."""
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        _point_client_at(monkeypatch, f"http://127.0.0.1:{sock.getsockname()[1]}")
-        yield
-
-
-@pytest.fixture
-def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
-    """A local stand-in for serpapi.com that answers every search with one result."""
-    received: list[dict[str, list[str]]] = []
-
-    class Handler(BaseHTTPRequestHandler):
-        @override
-        def do_GET(self) -> None:
-            received.append(parse_qs(urlsplit(self.path).query))
-            # Fields both engines' documented rows have; a row needs a USD price string to count.
-            result = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
-            body = json.dumps({"shopping_results": [result]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        @override
-        def log_message(self, *args: Any) -> None:
-            """Stay quiet: request lines carry the key."""
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    try:
-        stub = StubSerpApi(url=f"http://127.0.0.1:{server.server_port}", queries=received)
-        _point_client_at(monkeypatch, stub.url)
-        yield stub
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-
 @pytest.mark.parametrize("engine_cls", ENGINES)
 def test_connection_error_leaves_no_key_in_logs(engine_cls, fake_key, refused_serpapi, caplog):
     caplog.set_level(logging.DEBUG)
 
-    assert engine_cls().search("widget") == []
+    with pytest.raises(base.EngineError) as raised:
+        engine_cls().search("widget")
 
+    assert str(raised.value) == "request failed (ConnectionError)"
     assert FAKE_KEY not in caplog.text
     [error] = [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert "ConnectionError (host 127.0.0.1)" in error.getMessage()
     assert error.exc_info is None  # no traceback
+
+
+@pytest.mark.parametrize(("status", "body"), [INVALID_KEY, NO_SEARCHES_LEFT], ids=["401", "429"])
+@pytest.mark.parametrize("engine_cls", ENGINES)
+def test_rejected_key_or_quota_leaves_no_key_in_logs_or_engine_errors(
+    engine_cls, status, body, fake_key, stub_serpapi, db_session, caplog
+):
+    """SerpAPI's 401 and 429 go through requests to a local stub, whose URL carries the key."""
+    caplog.set_level(logging.DEBUG)
+    stub_serpapi.status, stub_serpapi.body = status, json.dumps(body)
+    item = Item(name="Widget", notify_email="w@x.com")
+    db_session.add(item)
+    db_session.commit()
+
+    with patch("hunter_bargain.services.searcher._ENGINES", [engine_cls()]):
+        result = run_price_check(item=item, db=db_session)
+
+    assert stub_serpapi.queries[0]["api_key"] == [FAKE_KEY]  # the request URL had the key
+    [engine_error] = result.engine_errors
+    assert engine_error.startswith(f"{engine_cls().name}: HTTP {status}, ")
+    assert engine_error.endswith(f": {body['error']}")
+    assert FAKE_KEY not in caplog.text
+    assert FAKE_KEY not in result.model_dump_json()  # the API's response body
 
 
 @pytest.mark.parametrize("engine_cls", ENGINES)
@@ -192,10 +166,10 @@ def test_app_entry_point_keeps_key_out_of_logs(stub_serpapi, tmp_path):
     # here it runs and writes to stderr.
     script = (
         "import logging, sys\n"
-        "from serpapi import GoogleSearch\n"
+        "from serpapi import SerpApiClient\n"
         "import hunter_bargain.main\n"
         "from hunter_bargain.services.engines.google import GoogleShoppingEngine\n"
-        "GoogleSearch.BACKEND = sys.argv[1]\n"
+        "SerpApiClient.BACKEND = sys.argv[1]\n"
         "GoogleShoppingEngine().search('widget')\n"
         "logging.getLogger('urllib3').setLevel(logging.DEBUG)\n"
         "GoogleShoppingEngine().search('widget')\n"

@@ -1,11 +1,14 @@
 """Tests for the search engine implementations and orchestrator."""
 
+import json
 import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import SecretStr
+from requests.adapters import HTTPAdapter
 
+from hunter_bargain.config import settings as app_settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.services.engines import base, bing, google
 from hunter_bargain.services.engines.base import SearchResult
@@ -136,6 +139,48 @@ BING_IPHONE_13 = {
 # No example row on the page carries one, so the tests add it to BING_IPHONE_13.
 BING_INSTALLMENTS = {"price": "$0", "text": "now", "installments": "$41.67/mo", "duration": "24"}
 
+# extracted_price values that are not a usable price (#8). Python's json module reads NaN and
+# Infinity in a response as floats, and a long integer literal as an int too large for a float.
+BAD_EXTRACTED_PRICES = [
+    pytest.param("5.88", id="string"),
+    pytest.param(float("nan"), id="nan"),
+    pytest.param(float("inf"), id="infinity"),
+    pytest.param(True, id="bool"),
+    pytest.param(0, id="zero"),
+    pytest.param(-5.88, id="negative"),
+    pytest.param(10**400, id="int-too-large-for-float"),
+]
+# Dollar price strings whose parsed amount is not usable, for rows without extracted_price.
+BAD_PRICE_STRINGS = [pytest.param("$0.00", id="zero"), pytest.param("$1e999", id="infinity")]
+
+# SerpAPI's documented error responses, https://serpapi.com/api-status-and-error-codes (fetched
+# 2026-10-05), with "..." parts of the examples left out.
+INVALID_KEY_BODY = {
+    "error": "Invalid API key. Your API key should be here: https://serpapi.com/manage-api-key"
+}
+NO_SEARCHES_LEFT_BODY = {"error": "Your account has run out of searches."}
+MISSING_QUERY_BODY = {"error": "Missing query `q` parameter."}
+SEARCH_ERROR_BODY = {  # served with HTTP 503 on the page
+    "search_metadata": {
+        "id": "64c32cfeb68f8bc186aaa013",
+        "status": "Error",
+        "json_endpoint": "https://serpapi.com/searches/d46c933a4a843289/64c32cfeb68f8bc186aaa013.json",
+    },
+    "error": "We couldn't get valid results for this search. Please try again later.",
+}
+# Same page, "Status: Success with empty organic results in Google Search API" (HTTP 200). The page
+# says the *_results_state key is named for each engine's results; Google Shopping's docs name it
+# shopping_results_state, so that key replaces the example's organic_results_state.
+NO_RESULTS_BODY = {
+    "search_metadata": {
+        "id": "6540ac26b68f8b2910019dd5",
+        "status": "Success",
+        "json_endpoint": "https://serpapi.com/searches/d1add70d119063c8/6540ac26b68f8b2910019dd5.json",
+    },
+    "search_information": {"shopping_results_state": "Fully empty"},
+    "error": "Google hasn't returned any results for this query.",
+}
+
 GOOGLE_LOGGER = "hunter_bargain.services.engines.google"
 BING_LOGGER = "hunter_bargain.services.engines.bing"
 
@@ -145,9 +190,9 @@ def _without(row: dict, *fields: str) -> dict:
     return {key: value for key, value in row.items() if key not in fields}
 
 
-def _serve(search_cls: MagicMock, *rows: dict) -> None:
-    """Make a patched SerpAPI client class return these shopping_results rows."""
-    search_cls.return_value.get_dict.return_value = {"shopping_results": list(rows)}
+def _serve(fetch: MagicMock, *rows: dict) -> None:
+    """Make an engine's patched SerpAPI fetch return these shopping_results rows."""
+    fetch.return_value = {"shopping_results": list(rows)}
 
 
 def _skip_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -156,26 +201,32 @@ def _skip_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 @pytest.fixture
 def google_search():
-    """The Google Shopping engine's SerpAPI client class, patched, with a fake key."""
+    """The Google Shopping engine's SerpAPI fetch, patched, with a fake key."""
     with (
         patch("hunter_bargain.services.engines.google.settings") as settings,
-        patch("hunter_bargain.services.engines.google.GoogleSearch") as search_cls,
+        patch("hunter_bargain.services.engines.google.fetch_serpapi") as fetch,
     ):
         settings.serpapi_key = SecretStr("test-key")
-        _serve(search_cls)
-        yield search_cls
+        _serve(fetch)
+        yield fetch
 
 
 @pytest.fixture
 def bing_search():
-    """The Bing Shopping engine's SerpAPI client class, patched, with a fake key."""
+    """The Bing Shopping engine's SerpAPI fetch, patched, with a fake key."""
     with (
         patch("hunter_bargain.services.engines.bing.settings") as settings,
-        patch("hunter_bargain.services.engines.bing.GoogleSearch") as search_cls,
+        patch("hunter_bargain.services.engines.bing.fetch_serpapi") as fetch,
     ):
         settings.serpapi_key = SecretStr("test-key")
-        _serve(search_cls)
-        yield search_cls
+        _serve(fetch)
+        yield fetch
+
+
+@pytest.fixture
+def serpapi_key(monkeypatch):
+    """A fake key in the app's settings, for engines that call the local stub SerpAPI."""
+    monkeypatch.setattr(app_settings, "serpapi_key", SecretStr("test-key"))
 
 
 @pytest.fixture
@@ -317,11 +368,12 @@ class TestGoogleShoppingEngine:
     """Tests for the Google Shopping engine (mocked SerpAPI calls)."""
 
     @patch("hunter_bargain.services.engines.google.settings")
-    def test_skips_when_no_api_key(self, mock_settings):
+    def test_missing_api_key_is_an_engine_error(self, mock_settings):
+        """Without a key no search runs: that is reported, not read as zero results (#8)."""
         mock_settings.serpapi_key = SecretStr("")
-        engine = GoogleShoppingEngine()
-        results = engine.search("iPhone")
-        assert results == []
+
+        with pytest.raises(base.EngineError, match="^SERPAPI_KEY is not set$"):
+            GoogleShoppingEngine().search("iPhone")
 
     def test_returns_sorted_results(self, google_search):
         _serve(google_search, GOOGLE_FOLGERS, GOOGLE_BUSTELO, GOOGLE_MAXWELL_HOUSE)
@@ -394,6 +446,39 @@ class TestGoogleShoppingEngine:
 
         assert (result.price, result.currency) == (5.88, "USD")
 
+    @pytest.mark.parametrize("extracted_price", BAD_EXTRACTED_PRICES)
+    def test_unusable_extracted_price_skips_only_that_row(
+        self, google_search, caplog, extracted_price
+    ):
+        """One bad row is skipped; the engine still returns the others (#8)."""
+        _serve(
+            google_search, {**GOOGLE_FOLGERS, "extracted_price": extracted_price}, GOOGLE_BUSTELO
+        )
+
+        with caplog.at_level(logging.DEBUG, logger=GOOGLE_LOGGER):
+            results = GoogleShoppingEngine().search("coffee")
+
+        assert [(r.title, r.price) for r in results] == [("Bustelo Coffee Espresso", 4.99)]
+        [record] = _skip_records(caplog)
+        assert record.levelno == logging.DEBUG
+        assert "skipped 'Folgers Classic Roast Ground Coffee', no usable price" in (
+            record.getMessage()
+        )
+
+    @pytest.mark.parametrize("price", BAD_PRICE_STRINGS)
+    def test_unusable_parsed_price_skips_only_that_row(self, google_search, caplog, price):
+        row = {**_without(GOOGLE_FOLGERS, "extracted_price"), "price": price}
+        _serve(google_search, row, GOOGLE_BUSTELO)
+
+        with caplog.at_level(logging.DEBUG, logger=GOOGLE_LOGGER):
+            results = GoogleShoppingEngine().search("coffee")
+
+        assert [(r.title, r.price) for r in results] == [("Bustelo Coffee Espresso", 4.99)]
+        [record] = _skip_records(caplog)
+        assert "skipped 'Folgers Classic Roast Ground Coffee', no usable price" in (
+            record.getMessage()
+        )
+
 
 class TestBingShoppingEngine:
     """Tests for the Bing Shopping engine (mocked SerpAPI calls)."""
@@ -452,6 +537,163 @@ class TestBingShoppingEngine:
         [result] = BingShoppingEngine().search("jacket")
 
         assert (result.price, result.currency) == (99.95, "USD")
+
+    @pytest.mark.parametrize("extracted_price", BAD_EXTRACTED_PRICES)
+    def test_unusable_extracted_price_skips_only_that_row(
+        self, bing_search, caplog, extracted_price
+    ):
+        """One bad row is skipped; the engine still returns the others (#8)."""
+        row = {**BING_PUFFER_JACKET, "extracted_price": extracted_price}
+        _serve(bing_search, row, BING_BI_SWING_JACKET)
+
+        with caplog.at_level(logging.DEBUG, logger=BING_LOGGER):
+            results = BingShoppingEngine().search("jacket")
+
+        assert [(r.title, r.price) for r in results] == [(BING_BI_SWING_JACKET["title"], 168.0)]
+        [record] = _skip_records(caplog)
+        assert record.levelno == logging.DEBUG
+        assert f"skipped {BING_PUFFER_JACKET['title']!r}, no usable price" in record.getMessage()
+
+    @pytest.mark.parametrize("price", BAD_PRICE_STRINGS)
+    def test_unusable_parsed_price_skips_only_that_row(self, bing_search, caplog, price):
+        row = {**_without(BING_PUFFER_JACKET, "extracted_price"), "price": price}
+        _serve(bing_search, row, BING_BI_SWING_JACKET)
+
+        with caplog.at_level(logging.DEBUG, logger=BING_LOGGER):
+            results = BingShoppingEngine().search("jacket")
+
+        assert [(r.title, r.price) for r in results] == [(BING_BI_SWING_JACKET["title"], 168.0)]
+        [record] = _skip_records(caplog)
+        assert f"skipped {BING_PUFFER_JACKET['title']!r}, no usable price" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "engine_cls", [GoogleShoppingEngine, BingShoppingEngine], ids=["google", "bing"]
+)
+class TestSerpApiResponses:
+    """Responses from a local stub SerpAPI, through the real client and requests (#8)."""
+
+    @pytest.mark.parametrize(
+        ("status", "body", "expected"),
+        [
+            pytest.param(
+                401,
+                INVALID_KEY_BODY,
+                "HTTP 401, SerpAPI rejected the API key: Invalid API key. Your API key should be"
+                " here: https://serpapi.com/manage-api-key",
+                id="401-invalid-key",
+            ),
+            pytest.param(
+                429,
+                NO_SEARCHES_LEFT_BODY,
+                "HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run"
+                " out of searches.",
+                id="429-no-searches-left",
+            ),
+            pytest.param(
+                400,
+                MISSING_QUERY_BODY,
+                "HTTP 400, SerpAPI refused the request: Missing query `q` parameter.",
+                id="400-missing-query",
+            ),
+            pytest.param(
+                503,
+                SEARCH_ERROR_BODY,
+                "HTTP 503, server error, try again later: We couldn't get valid results for this"
+                " search. Please try again later.",
+                id="503-status-error",
+            ),
+            # Variant: the documented status Error body with HTTP 200.
+            pytest.param(
+                200,
+                SEARCH_ERROR_BODY,
+                "HTTP 200, search status Error: We couldn't get valid results for this search."
+                " Please try again later.",
+                id="200-status-error",
+            ),
+        ],
+    )
+    def test_error_response_is_logged_and_returned_as_engine_error(
+        self,
+        engine_cls,
+        status,
+        body,
+        expected,
+        serpapi_key,
+        stub_serpapi,
+        db_session,
+        send_alert,
+        caplog,
+    ):
+        stub_serpapi.status, stub_serpapi.body = status, json.dumps(body)
+        engine = engine_cls()
+        item = _tracked_item(db_session, "Widget", 20.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert result.engine_errors == [f"{engine.name}: {expected}"]
+        assert (result.results_count, result.lowest_price) == (0, None)
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors == [f"Engine {engine.name} failed for item {item.id}: {expected!r}"]
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            (502, "HTTP 502, server error, try again later"),
+            (200, "HTTP 200, the response is not a JSON object"),
+        ],
+        ids=["502", "200"],
+    )
+    def test_non_json_body_is_reported_by_status_only(
+        self, engine_cls, status, expected, serpapi_key, stub_serpapi, db_session, send_alert
+    ):
+        """An HTML page, e.g. from a proxy, is an engine error; its text is not used."""
+        stub_serpapi.status, stub_serpapi.content_type = status, "text/html"
+        stub_serpapi.body = "<html><body><h1>Bad Gateway</h1></body></html>"
+        engine = engine_cls()
+        item = _tracked_item(db_session, "Widget", 20.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert result.engine_errors == [f"{engine.name}: {expected}"]
+
+    def test_success_with_error_string_is_zero_results_not_an_engine_error(
+        self, engine_cls, serpapi_key, stub_serpapi, db_session, send_alert, caplog
+    ):
+        """HTTP 200 with status Success and an error string: the search found nothing."""
+        caplog.set_level(logging.INFO)
+        stub_serpapi.body = json.dumps(NO_RESULTS_BODY)
+        engine = engine_cls()
+        item = _tracked_item(db_session, "Widget", 20.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert (result.results_count, result.lowest_price, result.engine_errors) == (0, None, [])
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+        assert (
+            f"SerpAPI {engine.name} search for 'Widget' found no results:"
+            ' "Google hasn\'t returned any results for this query."'
+            " (shopping_results_state 'Fully empty')"
+        ) in [r.getMessage() for r in caplog.records]
+
+    def test_request_has_a_finite_timeout(self, engine_cls, serpapi_key, stub_serpapi, monkeypatch):
+        """requests gets 20 s, not the legacy client's default of 60000 s (16.7 hours)."""
+        timeouts = []
+        send = HTTPAdapter.send
+
+        def send_and_record(adapter, request, **kwargs):
+            timeouts.append(kwargs["timeout"])
+            return send(adapter, request, **kwargs)
+
+        monkeypatch.setattr(HTTPAdapter, "send", send_and_record)
+
+        results = engine_cls().search("widget")
+
+        assert [r.price for r in results] == [9.99]  # the stub answered
+        assert timeouts == [20]
 
 
 class TestIsRelevant:
@@ -692,6 +934,54 @@ class TestRunPriceCheck:
 
         assert result.results_count == 1
         assert result.lowest_price == 999.0
+
+    def test_missing_key_is_an_engine_error_for_each_engine(
+        self, db_session, send_alert, monkeypatch, caplog
+    ):
+        """Without SERPAPI_KEY the check lists both engines as failed, not as "no results"."""
+        monkeypatch.setattr(app_settings, "serpapi_key", SecretStr(""))
+        item = _tracked_item(db_session, "Widget", 20.0)
+        engines = [GoogleShoppingEngine(), BingShoppingEngine()]
+
+        with patch("hunter_bargain.services.searcher._ENGINES", engines):
+            result = run_price_check(item=item, db=db_session)
+
+        assert result.engine_errors == [
+            "google_shopping: SERPAPI_KEY is not set",
+            "bing_shopping: SERPAPI_KEY is not set",
+        ]
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors == [
+            f"Engine google_shopping failed for item {item.id}: 'SERPAPI_KEY is not set'",
+            f"Engine bing_shopping failed for item {item.id}: 'SERPAPI_KEY is not set'",
+        ]
+
+    def test_unexpected_engine_exception_is_recorded_by_type_only(
+        self, db_session, send_alert, caplog
+    ):
+        """A bug in one engine is logged with its traceback; the other engine's results count."""
+        broken = MagicMock()
+        broken.name = "broken"
+        # Exception text can hold the request URL and its key (#5): only the type is returned.
+        broken.search.side_effect = TypeError(
+            "failed: https://serpapi.com/search?api_key=fake-key-in-exception-text"
+        )
+        working = MagicMock()
+        working.name = "working"
+        working.search.return_value = [
+            SearchResult(title="Tracked Widget", price=45.0, currency="USD", source="working")
+        ]
+        item = _tracked_item(db_session, "Tracked Widget", 50.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [broken, working]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert result.engine_errors == ["broken: unexpected error (TypeError)"]
+        assert (result.lowest_price, result.lowest_source) == (45.0, "working")
+        [record] = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert record.getMessage() == f"Engine broken failed for item {item.id}"
+        assert record.exc_info is not None  # logged with its traceback
+        assert "fake-key-in-exception-text" not in caplog.text  # redacted by the log setup
 
 
 class TestDocumentedRowsThroughPriceCheck:
