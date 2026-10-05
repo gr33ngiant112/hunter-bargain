@@ -44,7 +44,11 @@ def _check_item(item_id: int) -> None:
     """Check one item in a session of its own; a failure is logged, and closing the session
     at the end of the with block rolls back whatever the failed check left uncommitted."""
     with SessionLocal() as db:
-        item = db.get(Item, item_id)
+        try:
+            item = db.get(Item, item_id)
+        except Exception:
+            logger.exception("Could not load item %d for its price check", item_id)
+            return
         if item is None:
             logger.info("Item %d was deleted before its check — skipping.", item_id)
             return

@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session, sessionmaker
 
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.models import Item, PriceRecord
@@ -198,3 +198,50 @@ def test_check_that_fails_after_its_item_was_deleted_is_logged_and_the_run_conti
     assert checked == [first, second, third]
     [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert failure.getMessage() == f"Price check failed for item {second} ('Second')"
+
+
+def test_database_error_loading_an_item_does_not_stop_the_rest(
+    db_session, three_items, monkeypatch, caplog
+):
+    """#10: a DB error while the job loads one item (a locked database) skips only that item."""
+    first, second, third = three_items
+    load = Session.get
+
+    def get(self, entity, ident, *args, **kwargs):
+        if entity is Item and ident == second:
+            raise OperationalError("SELECT items", {}, Exception("database is locked"))
+        return load(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "get", get)
+    checked: list[int] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        return _empty_result(item)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        _run_job(db_session, fake_check)
+
+    assert checked == [first, third]
+    [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert failure.getMessage() == f"Could not load item {second} for its price check"
+    assert failure.exc_info is not None and failure.exc_info[0] is OperationalError
+
+
+def test_failed_check_leaves_none_of_its_writes_behind(db_session, three_items):
+    """#10: closing the item's session rolls back what a failed check wrote but did not commit."""
+    first, second, third = three_items
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        db.add(PriceRecord(item_id=item.id, price=9.99, source="google_shopping"))
+        if item.id == second:
+            db.flush()  # written to the database, not committed
+            raise RuntimeError("alert could not be sent")
+        db.commit()
+        return _empty_result(item)
+
+    _run_job(db_session, fake_check)
+
+    db_session.expire_all()
+    saved = sorted(record.item_id for record in db_session.query(PriceRecord))
+    assert saved == [first, third]
