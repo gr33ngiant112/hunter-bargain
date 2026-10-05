@@ -7,12 +7,8 @@ import pytest
 from pydantic import SecretStr
 
 from hunter_bargain.models import Item, PriceRecord
-from hunter_bargain.services.engines import bing, google
-from hunter_bargain.services.engines.base import (
-    SearchResult,
-    is_installment_offer,
-    is_usd_price,
-)
+from hunter_bargain.services.engines import base, bing, google
+from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.engines.bing import BingShoppingEngine
 from hunter_bargain.services.engines.google import GoogleShoppingEngine, _parse_price
 from hunter_bargain.services.searcher import (
@@ -223,7 +219,9 @@ class TestParsePrice:
     def test_invalid(self):
         assert _parse_price("free") is None
 
-    @pytest.mark.parametrize("parse", [google._parse_price, bing._parse_price])
+    @pytest.mark.parametrize(
+        "parse", [google._parse_price, bing._parse_price], ids=["google", "bing"]
+    )
     @pytest.mark.parametrize("price_str", ["$20.99/mo", "From $999"])
     def test_monthly_or_from_price_is_not_a_number(self, parse, price_str):
         """The fallback parser gives no number for a monthly price or a "From" price (#35)."""
@@ -246,7 +244,7 @@ class TestPriceChecks:
         ],
     )
     def test_is_usd_price(self, price, expected):
-        assert is_usd_price(price) is expected
+        assert base.is_usd_price(price) is expected
 
     @pytest.mark.parametrize(
         ("row", "key", "expected"),
@@ -281,7 +279,7 @@ class TestPriceChecks:
         ],
     )
     def test_is_installment_offer(self, row, key, expected):
-        assert is_installment_offer(row, key) is expected
+        assert base.is_installment_offer(row, key) is expected
 
 
 class TestBuildQuery:
@@ -347,8 +345,13 @@ class TestGoogleShoppingEngine:
 
     @pytest.mark.parametrize(
         "row",
-        [GOOGLE_MONTHLY, _without(GOOGLE_MONTHLY, "installment")],
-        ids=["documented", "mo-suffix-only"],
+        [
+            GOOGLE_MONTHLY,
+            # Variants of the documented row that keep only one sign of a payment plan.
+            _without(GOOGLE_MONTHLY, "installment"),
+            {**GOOGLE_MONTHLY, "price": "$20.99"},
+        ],
+        ids=["documented", "mo-suffix-only", "installment-object-only"],
     )
     def test_skips_monthly_price(self, google_search, caplog, row):
         _serve(google_search, row, GOOGLE_FOLGERS)
@@ -691,9 +694,9 @@ class TestRunPriceCheck:
 class TestDocumentedRowsThroughPriceCheck:
     """Documented rows through the real engines, relevance filter, storage and alert decision."""
 
-    @pytest.mark.parametrize("target", [20.99, 200.0, 209.9, 400.0, 900.0])
+    @pytest.mark.parametrize("target", [20.99, 200.0, 209.0, 400.0, 900.0])
     def test_monthly_price_is_never_the_alert_price(self, engines, send_alert, db_session, target):
-        """Up to a $209.90 target the row passes the 10% floor; only the new check stops it."""
+        """Below a $209.90 target the row clears the 10% floor; only the new check stops it."""
         _serve(engines[0], GOOGLE_MONTHLY)
         item = _tracked_item(db_session, "iPhone 15 Pro Max", target)
 
