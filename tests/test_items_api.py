@@ -268,6 +268,20 @@ def test_create_item_caps_target_price(client, target, status):
     assert resp.status_code == status
 
 
+@pytest.mark.parametrize(
+    ("target", "status"), [(1_000_000, 200), (1_000_000.01, 422), (1e300, 422)]
+)
+def test_update_item_caps_target_price(client, target, status):
+    """PATCH applies the same $1,000,000 cap as POST; a rejected target leaves the old one."""
+    item_id = _create_widget(client)
+
+    resp = client.patch(f"/api/v1/items/{item_id}", json={"target_price": target})
+
+    assert resp.status_code == status
+    expected = target if status == 200 else 50.0
+    assert client.get(f"/api/v1/items/{item_id}").json()["target_price"] == expected
+
+
 # Whitespace only: the name has no search words, so the relevance filter would keep every listing.
 BLANK_NAMES = ["   ", "　", "   "]
 
