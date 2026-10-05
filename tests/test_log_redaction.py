@@ -75,7 +75,8 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
         @override
         def do_GET(self) -> None:
             received.append(parse_qs(urlsplit(self.path).query))
-            result = {"title": "Widget", "extracted_price": 9.99, "link": "http://127.0.0.1/w"}
+            # Fields both engines' documented rows have; a row needs a USD price string to count.
+            result = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
             body = json.dumps({"shopping_results": [result]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

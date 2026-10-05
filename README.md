@@ -87,8 +87,8 @@ hb check 1
 
 Output:
 ```
-  PlayStation 5: $449.00 (google_shopping) — 8 result(s)
-    -> https://shopping.google.com/...
+  PlayStation 5: $449.00 (Walmart via google_shopping) — 8 result(s)
+    -> https://www.google.com/shopping/product/...
 ```
 
 ## Features
@@ -190,7 +190,8 @@ Response:
   "item_name": "NVIDIA RTX 5090",
   "lowest_price": 2149.00,
   "lowest_source": "google_shopping",
-  "lowest_url": "https://shopping.google.com/...",
+  "lowest_merchant": "Best Buy",
+  "lowest_url": "https://www.google.com/shopping/product/...",
   "results_count": 5,
   "records": [...]
 }

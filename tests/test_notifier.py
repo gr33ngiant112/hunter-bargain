@@ -220,7 +220,7 @@ class TestAlertContent:
     None of them may add markup or a non-http(s) link to the alert.
     """
 
-    @pytest.mark.parametrize("field", ["name", "title", "source", "currency"])
+    @pytest.mark.parametrize("field", ["name", "title", "source", "currency", "merchant"])
     def test_html_part_escapes_markup(self, smtp_settings, smtp_classes, field):
         item, result = _item(), _result()
         if field == "name":
@@ -235,6 +235,43 @@ class TestAlertContent:
         assert ESCAPED_MARKUP in html_part
         assert MARKUP not in html_part
         assert "<b>" not in html_part
+
+    def test_merchant_is_shown_next_to_engine_name(self, smtp_settings, smtp_classes):
+        """AT&T is a seller in SerpAPI's documented Google Shopping rows (#34)."""
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), merchant="AT&T")) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "Source: AT&T via google_shopping\n" in plain
+        assert ">AT&amp;T via google_shopping</td>" in html_part
+
+    def test_without_merchant_source_is_engine_name(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=_result()) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "Source: google_shopping\n" in plain
+        assert ">google_shopping</td>" in html_part
+
+    @pytest.mark.parametrize("line_break", ["\r\n", "\n", "\r", "\u2028"])
+    def test_line_break_in_merchant_adds_no_line(self, smtp_settings, smtp_classes, line_break):
+        """A merchant name cannot add a line, such as a second Link line, to the plain-text part."""
+        merchant = f"Shop{line_break}Link: N/A"
+        result = replace(_result(), url="https://example.com/widget", merchant=merchant)
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=result) is True
+
+        plain, _ = _sent_parts(server)
+        lines = plain.splitlines()
+        assert [line for line in lines if line.startswith("Source:")] == [
+            "Source: Shop Link: N/A via google_shopping"
+        ]
+        assert [line for line in lines if line.startswith("Link:")] == [
+            "Link: https://example.com/widget"
+        ]
 
     @pytest.mark.parametrize("scheme", ["http", "https", "HTTPS"])
     def test_http_url_is_linked_and_escaped_in_href(self, smtp_settings, smtp_classes, scheme):

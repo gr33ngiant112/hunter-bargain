@@ -26,6 +26,7 @@ def test_check_price_success(mock_run, client):
         item_name="Gadget",
         lowest_price=39.99,
         lowest_source="google_shopping",
+        lowest_merchant="Walmart",
         lowest_url="http://example.com",
         results_count=1,
         records=[],
@@ -36,3 +37,4 @@ def test_check_price_success(mock_run, client):
     data = resp.json()
     assert data["lowest_price"] == 39.99
     assert data["item_name"] == "Gadget"
+    assert (data["lowest_source"], data["lowest_merchant"]) == ("google_shopping", "Walmart")

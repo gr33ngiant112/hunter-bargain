@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
+
+# A US dollar price as SerpAPI shows it for US results: "$" and then the amount, e.g. "$1,299.00".
+_USD_PRICE = re.compile(r"\$\d")
+
+# A payment-plan price ends with the payment period, e.g. "$20.99/mo".
+_INSTALLMENT_SUFFIXES = ("/mo", "/wk")
 
 
 @dataclass(frozen=True)
@@ -19,6 +27,8 @@ class SearchResult:
         extensions: Optional metadata tags from the search engine (e.g.
             ``["Smartphone", "5G", "OLED"]`` from Google Shopping).  Useful
             for distinguishing product categories from accessories.
+        merchant: Seller named by the listing (Google Shopping ``source``,
+            Bing ``seller``).  Third-party text: escape it wherever it is shown.
     """
 
     title: str
@@ -27,6 +37,29 @@ class SearchResult:
     source: str
     url: str | None = None
     extensions: tuple[str, ...] | None = None
+    merchant: str | None = None
+
+
+def is_usd_price(price: object) -> bool:
+    """Return True if a SerpAPI price string is in US dollars, e.g. "$1,299.00".
+
+    Item targets are in USD and the requests set no country (gl), but a row can still be priced
+    in another currency, e.g. "TRY 28,782.94". Any other string, or no string, is not USD. A
+    plain "$" cannot tell other dollar currencies apart, so it counts as USD.
+    """
+    return isinstance(price, str) and _USD_PRICE.match(price.strip()) is not None
+
+
+def is_installment_offer(row: dict[str, Any], installment_key: str) -> bool:
+    """Return True if a SerpAPI row offers a payment plan, so its price is not the full price.
+
+    Such a row carries an installment object (``installment`` on Google Shopping,
+    ``installments`` on Bing) or a price string ending in the period, e.g. "$20.99/mo".
+    """
+    if row.get(installment_key):
+        return True
+    price = row.get("price")
+    return isinstance(price, str) and price.strip().lower().endswith(_INSTALLMENT_SUFFIXES)
 
 
 class SearchEngine(ABC):

@@ -230,6 +230,9 @@ def check(ctx: click.Context, item_id: int | None) -> None:
         count = result["results_count"]
         lowest = result.get("lowest_price")
         source = _clean(result.get("lowest_source", ""))
+        merchant = _clean(result.get("lowest_merchant") or "")
+        if merchant:
+            source = f"{merchant} via {source}"
         lowest_url = result.get("lowest_url")
 
         if lowest is not None:

@@ -43,17 +43,27 @@ def _link_url(url: str | None) -> str | None:
     return url if scheme in _LINK_SCHEMES else None
 
 
+def _source_label(result: SearchResult) -> str:
+    """The engine name, after the merchant if the listing names one: "Walmart via google_shopping".
+
+    The merchant is third-party text. Its line breaks (CR, LF, U+2028 and the like) become
+    spaces, so it cannot add a line to the plain-text part.
+    """
+    merchant = " ".join((result.merchant or "").split())
+    return f"{merchant} via {result.source}" if merchant else result.source
+
+
 def _build_html_body(item: Item, result: SearchResult) -> str:
     """Build the HTML email body for a price alert.
 
-    The item name comes from an API caller and the title, currency, source and URL from a
+    The item name comes from an API caller and the title, currency, merchant and URL from a
     third-party listing, so every value is HTML-escaped before it goes into the markup.
     """
     name = _escape(item.name)
     title = _escape(result.title)
     price = _escape(f"${result.price:.2f} {result.currency}")
     target = _escape(f"${item.target_price:.2f}")
-    source = _escape(result.source)
+    source = _escape(_source_label(result))
 
     link_html = ""
     url = _link_url(result.url)
@@ -133,7 +143,7 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
             f"Price Alert: {item.name}\n"
             f"Price: ${result.price:.2f} {result.currency}\n"
             f"Target: ${item.target_price:.2f}\n"
-            f"Source: {result.source}\n"
+            f"Source: {_source_label(result)}\n"
             f"Link: {_link_url(result.url) or 'N/A'}\n"
         )
         msg.attach(MIMEText(plain, "plain"))

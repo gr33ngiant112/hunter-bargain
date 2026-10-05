@@ -9,7 +9,12 @@ import requests
 from serpapi import GoogleSearch
 
 from hunter_bargain.config import settings
-from hunter_bargain.services.engines.base import SearchEngine, SearchResult
+from hunter_bargain.services.engines.base import (
+    SearchEngine,
+    SearchResult,
+    is_installment_offer,
+    is_usd_price,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +47,25 @@ class GoogleShoppingEngine(SearchEngine):
 
             results: list[SearchResult] = []
             for item in shopping_results:
+                title = item.get("title", "")
+                price_str = item.get("price")
+                # A payment-plan amount is not the item's price: never compare it with the target.
+                if is_installment_offer(item, "installment"):
+                    logger.debug(
+                        "Google Shopping: skipped payment-plan offer %r (price %r)",
+                        title,
+                        price_str,
+                    )
+                    continue
+                if not is_usd_price(price_str):
+                    logger.debug(
+                        "Google Shopping: skipped %r, no USD price (price %r)", title, price_str
+                    )
+                    continue
                 # SerpAPI returns extracted_price as a float or price as a string like "$1,299.00"
                 price = item.get("extracted_price")
                 if price is None:
                     # Try parsing the price string
-                    price_str = item.get("price", "")
                     price = _parse_price(price_str)
 
                 if price is not None and price > 0:
@@ -54,12 +73,14 @@ class GoogleShoppingEngine(SearchEngine):
                     extensions = tuple(raw_ext) if raw_ext else None
                     results.append(
                         SearchResult(
-                            title=item.get("title", ""),
+                            title=title,
                             price=price,
                             currency="USD",
                             source=self.name,
-                            url=item.get("link"),
+                            # Rows carry no merchant URL: product_link is the Google product page.
+                            url=item.get("product_link"),
                             extensions=extensions,
+                            merchant=item.get("source") or None,
                         )
                     )
 
