@@ -57,3 +57,16 @@ def test_is_alert_recipient_ignores_ascii_case_only():
     assert settings.is_alert_recipient("kate2@example.com") is False
     # U+212A KELVIN SIGN lower-cases to ASCII "k"; Unicode case mapping must not make it match.
     assert settings.is_alert_recipient("Kate@example.com") is False
+
+
+def test_env_file_may_hold_docker_compose_variables(tmp_path, monkeypatch):
+    """.env is shared with Docker Compose, whose own variables are not app settings."""
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "HB_BIND_ADDR=127.0.0.1\nAPP_PORT=8000\nAPP_HOST=0.0.0.0\nLOG_LEVEL=debug\n"
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.log_level == "debug"

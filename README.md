@@ -243,7 +243,7 @@ User adds item → Stored in SQLite
 
 ## Configuration
 
-All configuration is via environment variables (`.env` file):
+All configuration is via environment variables (`.env` file). The app ignores `.env` keys it does not use, such as Docker Compose's `HB_BIND_ADDR` and `APP_PORT`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -256,9 +256,9 @@ All configuration is via environment variables (`.env` file):
 | `SMTP_PASSWORD` | — | SMTP login password |
 | `EMAIL_FROM` | `SMTP_USER` | From address for alerts |
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
-| `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks |
-| `APP_HOST` | `0.0.0.0` | Server bind host |
-| `APP_PORT` | `8000` | Server bind port |
+| `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ` |
+| `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
+| `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
 | `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
 | `LOG_LEVEL` | `info` | Logging level |
 
