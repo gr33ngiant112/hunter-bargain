@@ -36,7 +36,6 @@ def init_db() -> None:
     SQLite creates a missing database file but not its directory, and the default
     DATABASE_URL points into ./data, which a fresh clone does not have: create it first.
     """
-    database = engine.url.database
-    if engine.url.get_backend_name() == "sqlite" and database and database != ":memory:":
-        Path(database).parent.mkdir(parents=True, exist_ok=True)
+    if engine.url.get_backend_name() == "sqlite" and engine.url.database:
+        Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
