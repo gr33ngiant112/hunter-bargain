@@ -40,26 +40,24 @@ jobs:
     name: secret-scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read # gitleaks-action lists a PR's commits through the API
     steps:
-      # gitleaks-action reads a PR's commits with one unpaginated API call (at most 30), and the
-      # push run after a merge scans no PR commits, so a longer PR would be only partly scanned.
-      - name: Refuse PRs too long for a full scan
-        if: github.event_name == 'pull_request' && github.event.pull_request.commits > 30
-        run: |
-          echo "::error::This PR has more than 30 commits; the secret scan covers only 30. Split it into smaller PRs."
-          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # gitleaks reads the full history behind HEAD
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: "false"
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+      - name: Install gitleaks 8.30.1 (checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      # Scans every commit reachable from HEAD (on a PR, GitHub's merge commit), so no commit
+      # range or PR size can leave commits out. --diff-merges=first-parent also scans what each
+      # merge commit changes (git log -p skips merge diffs by default). --redact keeps values
+      # out of the log.
+      - name: Scan the full history with gitleaks
+        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --log-opts="--diff-merges=first-parent HEAD" .'
 
   dependency-scan:
     name: dependency-scan
