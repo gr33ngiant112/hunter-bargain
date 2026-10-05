@@ -111,3 +111,7 @@ class PriceCheckResult(BaseModel):
     lowest_url: str | None
     results_count: int
     records: list[PriceRecordResponse]
+    # Engines that could not search, e.g. "bing_shopping: HTTP 429, SerpAPI searches used up or
+    # hourly limit reached: ...". Built from the engine name, HTTP status and SerpAPI's error
+    # string only, never from exception text, which can carry the API key.
+    engine_errors: list[str] = []

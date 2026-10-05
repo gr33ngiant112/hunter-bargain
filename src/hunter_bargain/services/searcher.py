@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult, PriceRecordResponse
-from hunter_bargain.services.engines.base import SearchEngine, SearchResult
+from hunter_bargain.services.engines.base import EngineError, SearchEngine, SearchResult
 from hunter_bargain.services.engines.bing import BingShoppingEngine
 from hunter_bargain.services.engines.google import GoogleShoppingEngine
 from hunter_bargain.services.notifier import send_price_alert
@@ -215,7 +215,8 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     """Execute a price check across all engines for a single item.
 
     1. Build search query from item name + keywords.
-    2. Query each registered engine.
+    2. Query each registered engine; an engine that cannot search is logged at ERROR and
+       listed in engine_errors, so a failed search is not reported as "no results".
     3. Persist all price observations.
     4. If any price meets the target, fire an email notification.
     5. Return structured results.
@@ -224,12 +225,20 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     logger.info("Running price check for item %d: %r", item.id, query)
 
     all_results: list[SearchResult] = []
+    engine_errors: list[str] = []
     for engine in _ENGINES:
         try:
             results = engine.search(query)
             all_results.extend(results)
-        except Exception:
+        except EngineError as e:
+            # Its message holds the HTTP status and SerpAPI's error string, never the key.
+            logger.error("Engine %s failed for item %d: %r", engine.name, item.id, str(e))
+            engine_errors.append(f"{engine.name}: {e}")
+        except Exception as e:
+            # A bug: the traceback is logged (the log setup redacts the key), but exception
+            # text can carry the request URL and its key, so the result names the type only.
             logger.exception("Engine %s failed for item %d", engine.name, item.id)
+            engine_errors.append(f"{engine.name}: unexpected error ({type(e).__name__})")
 
     relevant_results = _filter_relevant(all_results, item)
 
@@ -258,4 +267,5 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
         lowest_url=lowest.url if lowest else None,
         results_count=len(relevant_results),
         records=[PriceRecordResponse.model_validate(r) for r in records],
+        engine_errors=engine_errors,
     )
