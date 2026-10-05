@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
+import requests
 from serpapi import GoogleSearch  # SerpAPI uses GoogleSearch class for all engines
 
 from hunter_bargain.config import settings
@@ -31,7 +33,7 @@ class BingShoppingEngine(SearchEngine):
             params = {
                 "engine": "bing_shopping",
                 "q": query,
-                "api_key": settings.serpapi_key,
+                "api_key": settings.serpapi_key.get_secret_value(),
                 "count": 10,
             }
             search = GoogleSearch(params)
@@ -60,6 +62,16 @@ class BingShoppingEngine(SearchEngine):
             logger.info("Bing Shopping: found %d results for %r", len(results), query)
             return results
 
+        except requests.RequestException as e:
+            # The request URL carries the API key: log the error type and host only.
+            url = getattr(e.request, "url", None) or ""
+            logger.error(
+                "Bing Shopping search failed for %r: %s (host %s)",
+                query,
+                type(e).__name__,
+                urlsplit(url).hostname,
+            )
+            return []
         except Exception:
             logger.exception("Bing Shopping search failed for %r", query)
             return []

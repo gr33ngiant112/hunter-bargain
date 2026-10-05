@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     email_from: str = ""
 
     # SerpAPI
-    serpapi_key: str = ""
+    serpapi_key: SecretStr = SecretStr("")
 
     # Application
     app_host: str = "0.0.0.0"
