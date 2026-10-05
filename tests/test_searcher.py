@@ -19,7 +19,8 @@ from hunter_bargain.services.searcher import (
 )
 
 # shopping_results rows from SerpAPI's documented examples, fetched 2026-10-05, trimmed to the
-# fields the engines read plus the position or title. Google Shopping rows have no "link" field.
+# fields the engines read (and Google's position). The lira row also keeps its alternative_price,
+# which the engines do not use. Google Shopping rows have no "link" field.
 
 # Google Shopping, https://serpapi.com/shopping-results: "Results for: q: Coffee", rows 1 to 3.
 GOOGLE_FOLGERS = {
@@ -235,6 +236,8 @@ class TestPriceChecks:
         ("price", "expected"),
         [
             ("$5.88", True),
+            # Bing's documented "Best Buy Canada" row (bestbuy.ca) is priced "$1,449.99", probably
+            # in CAD, but "$" alone cannot tell, so it counts as USD: a known limitation.
             ("$1,449.99", True),
             ("$20.99/mo", True),  # in dollars, but is_installment_offer rejects it
             ("TRY 28,782.94", False),

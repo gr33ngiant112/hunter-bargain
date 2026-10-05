@@ -49,7 +49,7 @@ class GoogleShoppingEngine(SearchEngine):
             for item in shopping_results:
                 title = item.get("title", "")
                 price_str = item.get("price")
-                # A monthly payment is not the item's price: never compare it with the target.
+                # A payment-plan amount is not the item's price: never compare it with the target.
                 if is_installment_offer(item, "installment"):
                     logger.debug(
                         "Google Shopping: skipped payment-plan offer %r (price %r)",
