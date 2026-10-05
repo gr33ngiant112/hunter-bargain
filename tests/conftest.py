@@ -149,7 +149,8 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     stub.url = f"http://127.0.0.1:{server.server_port}"
-    thread = threading.Thread(target=server.serve_forever)
+    # shutdown() waits for the server's next poll, so poll often to keep each test's teardown short.
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
     thread.start()
     try:
         _point_client_at(monkeypatch, stub.url)

@@ -659,6 +659,21 @@ class TestSerpApiResponses:
 
         assert result.engine_errors == [f"{engine.name}: {expected}"]
 
+    def test_long_error_string_is_cut_to_200_characters(
+        self, engine_cls, serpapi_key, stub_serpapi, db_session, send_alert
+    ):
+        """SerpAPI's error string is third-party text: an engine error keeps 200 characters."""
+        stub_serpapi.status, stub_serpapi.body = 401, json.dumps({"error": "x" * 1000})
+        engine = engine_cls()
+        item = _tracked_item(db_session, "Widget", 20.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert result.engine_errors == [
+            f"{engine.name}: HTTP 401, SerpAPI rejected the API key: {'x' * 200}"
+        ]
+
     def test_success_with_error_string_is_zero_results_not_an_engine_error(
         self, engine_cls, serpapi_key, stub_serpapi, db_session, send_alert, caplog
     ):
