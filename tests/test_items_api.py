@@ -1,6 +1,11 @@
 """Tests for item CRUD API endpoints."""
 
+import pytest
+
 from hunter_bargain.config import settings
+
+# Control characters (Unicode category Cc): LF, CR, tab, NUL, ESC, DEL and the C1 CSI.
+CONTROL_CHARACTERS = ["\n", "\r", "\t", "\x00", "\x1b", "\x7f", "\x9b"]
 
 
 def test_create_item(client):
@@ -128,3 +133,53 @@ def test_empty_alert_recipients_rejects_every_address(client, monkeypatch):
         "/api/v1/items/", json={"name": "Widget", "notify_email": "user@example.com"}
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.parametrize("char", CONTROL_CHARACTERS)
+@pytest.mark.parametrize("field", ["name", "keywords"])
+def test_create_item_rejects_control_characters(client, field, char):
+    """POST with a control character in name or keywords returns 422 and stores nothing."""
+    payload = {"name": "Widget", "keywords": "blue", "notify_email": "user@example.com"}
+    payload[field] = f"Widget{char}Pro"
+
+    resp = client.post("/api/v1/items/", json=payload)
+
+    assert resp.status_code == 422
+    error = resp.json()["detail"][0]
+    assert error["loc"] == ["body", field]
+    assert "must not contain control characters" in error["msg"]
+    assert client.get("/api/v1/items/").json() == []
+
+
+@pytest.mark.parametrize("char", CONTROL_CHARACTERS)
+@pytest.mark.parametrize("field", ["name", "keywords"])
+def test_update_item_rejects_control_characters(client, field, char):
+    """PATCH with a control character in name or keywords returns 422 and keeps the old text."""
+    create_resp = client.post(
+        "/api/v1/items/",
+        json={"name": "Widget", "keywords": "blue", "notify_email": "user@example.com"},
+    )
+    item_id = create_resp.json()["id"]
+
+    resp = client.patch(f"/api/v1/items/{item_id}", json={field: f"Widget{char}Pro"})
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"][0]["loc"] == ["body", field]
+    item = client.get(f"/api/v1/items/{item_id}").json()
+    assert (item["name"], item["keywords"]) == ("Widget", "blue")
+
+
+def test_item_text_accepts_printable_unicode(client):
+    """Accented letters, symbols, CJK and spaces are not control characters."""
+    name, keywords = "Café “Pro” — 50% off™", "größe, 日本"
+    create_resp = client.post(
+        "/api/v1/items/",
+        json={"name": name, "keywords": keywords, "notify_email": "user@example.com"},
+    )
+    assert create_resp.status_code == 201
+    assert (create_resp.json()["name"], create_resp.json()["keywords"]) == (name, keywords)
+
+    item_id = create_resp.json()["id"]
+    resp = client.patch(f"/api/v1/items/{item_id}", json={"name": "Café Neo", "keywords": None})
+    assert resp.status_code == 200
+    assert (resp.json()["name"], resp.json()["keywords"]) == ("Café Neo", None)

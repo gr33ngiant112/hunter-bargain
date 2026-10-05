@@ -1,5 +1,6 @@
 """Tests for the search engine implementations and orchestrator."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
@@ -253,6 +254,33 @@ class TestRunPriceCheck:
 
         run_price_check(item=item, db=db_session)
         mock_notify.assert_called_once()
+
+    @patch("hunter_bargain.services.searcher.send_price_alert")
+    @patch("hunter_bargain.services.searcher._ENGINES")
+    def test_target_met_log_quotes_item_name(self, mock_engines, mock_notify, db_session, caplog):
+        """A line break in an item name stays inside its log record (logged with %r)."""
+        mock_engine = MagicMock()
+        mock_engine.name = "mock"
+        mock_engine.search.return_value = [
+            SearchResult(
+                title="Tracked Widget Fake Record", price=45.0, currency="USD", source="mock"
+            ),
+        ]
+        mock_engines.__iter__ = lambda self: iter([mock_engine])
+
+        item = Item(name="Tracked Widget\nFake record", notify_email="n@x.com", target_price=50.0)
+        db_session.add(item)
+        db_session.commit()
+        db_session.refresh(item)
+
+        with caplog.at_level(logging.INFO, logger="hunter_bargain.services.searcher"):
+            run_price_check(item=item, db=db_session)
+
+        mock_notify.assert_called_once()
+        target_met = [r.getMessage() for r in caplog.records if "Target met" in r.getMessage()]
+        assert target_met == [
+            f"Target met for item {item.id} ('Tracked Widget\\nFake record'): $45.00 <= $50.00"
+        ]
 
     @patch("hunter_bargain.services.searcher.send_price_alert")
     @patch("hunter_bargain.services.searcher._ENGINES")
