@@ -21,8 +21,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./data/hunter_bargain.db"
 
-    # Scheduling — cron expression for daily price checks
+    # Scheduling — cron expression for daily price checks, in the IANA time zone price_check_tz
     price_check_cron: str = "0 9 * * *"
+    price_check_tz: str = "UTC"
 
     # SMTP email
     smtp_host: str = "smtp.gmail.com"
@@ -41,11 +42,11 @@ class Settings(BaseSettings):
     serpapi_key: SecretStr = SecretStr("")
 
     # Application
-    app_host: str = "0.0.0.0"
-    app_port: int = 8000
     log_level: str = "info"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # .env also holds Docker Compose's own variables (HB_BIND_ADDR, APP_PORT), which are not
+    # settings here: ignore keys that match no setting instead of refusing to start.
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @field_validator("alert_recipients", mode="before")
     @classmethod

@@ -3,9 +3,14 @@
 import logging
 from unittest.mock import patch
 
+import pytest
+from apscheduler.schedulers.background import BackgroundScheduler
+
+from hunter_bargain.config import Settings, settings
 from hunter_bargain.models import Item
 from hunter_bargain.schemas import PriceCheckResult
-from hunter_bargain.services.scheduler import _scheduled_price_check
+from hunter_bargain.services import scheduler as scheduler_module
+from hunter_bargain.services.scheduler import _scheduled_price_check, start_scheduler
 
 
 def test_scheduled_check_logs_item_names_with_repr(db_session, caplog):
@@ -40,3 +45,33 @@ def test_scheduled_check_logs_item_names_with_repr(db_session, caplog):
     messages = [record.getMessage() for record in caplog.records]
     assert f"Item {checked_id} ('Widget\\nFake record'): 0 results, lowest=$N/A" in messages
     assert f"Price check failed for item {failing_id} ('Gadget\\r\\nFake record')" in messages
+
+
+@pytest.fixture
+def daily_trigger(monkeypatch):
+    """Return a function that runs start_scheduler and returns the daily job's trigger."""
+    fresh = BackgroundScheduler()
+    monkeypatch.setattr(scheduler_module, "scheduler", fresh)
+
+    def start():
+        start_scheduler()
+        return fresh.get_job("daily_price_check").trigger
+
+    yield start
+    if fresh.running:
+        fresh.shutdown(wait=False)
+
+
+def test_price_check_time_zone_defaults_to_utc(monkeypatch):
+    monkeypatch.delenv("PRICE_CHECK_TZ", raising=False)
+
+    assert Settings(_env_file=None).price_check_tz == "UTC"
+
+
+@pytest.mark.parametrize("zone", ["UTC", "America/Chicago", "Asia/Kolkata"])
+def test_daily_job_runs_in_the_configured_time_zone(daily_trigger, monkeypatch, zone):
+    """The cron fires in PRICE_CHECK_TZ, not in the host's local time zone."""
+    monkeypatch.setattr(settings, "price_check_tz", zone)
+
+    # APScheduler turns "UTC" into datetime.timezone.utc and other names into ZoneInfo objects.
+    assert str(daily_trigger().timezone) == zone

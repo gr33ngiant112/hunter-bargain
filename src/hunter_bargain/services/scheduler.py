@@ -53,7 +53,8 @@ def _scheduled_price_check() -> None:
 
 def start_scheduler() -> None:
     """Register the daily price check job and start the scheduler."""
-    trigger = CronTrigger.from_crontab(settings.price_check_cron)
+    # Without a time zone the trigger would use the host's local time.
+    trigger = CronTrigger.from_crontab(settings.price_check_cron, timezone=settings.price_check_tz)
     scheduler.add_job(
         _scheduled_price_check,
         trigger=trigger,
@@ -62,7 +63,9 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Scheduler started — cron: %s", settings.price_check_cron)
+    logger.info(
+        "Scheduler started — cron: %s (%s)", settings.price_check_cron, settings.price_check_tz
+    )
 
 
 def stop_scheduler() -> None:
