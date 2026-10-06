@@ -46,12 +46,17 @@ pip install -e ".[dev]"
 
 ### Configure
 
-The tests need no `.env`. To run the app, copy the example and fill in your values:
+The tests need no `.env`. To run the app, copy the example. Its values are for development: no
+credentials, and `docker compose --profile dev up` sends alerts to Mailpit (README "Local
+Development"):
 
 ```bash
 cp .env.example .env
-# Edit .env with your API keys and SMTP credentials
 ```
+
+Keep real API keys and SMTP credentials out of the checkout, in the file `HB_ENV_FILE` names
+(README "Deployment"): anything run in the checkout, tests and coding agents included, loads its
+`.env`.
 
 ### Run Tests
 

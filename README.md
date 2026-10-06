@@ -52,12 +52,24 @@ cd hunter-bargain
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+The checkout's `.env` holds development values only: no credentials, and alerts go to Mailpit
+(see [Local Development](#local-development)). Real settings go in a file outside the checkout,
+so that nothing run in it (pytest, uvicorn, a coding agent) loads them. `HB_ENV_FILE` in `.env`
+tells Docker Compose to give that file to the app:
+
+```bash
+mkdir -p ~/.config/hunter-bargain
+install -m 600 .env.example ~/.config/hunter-bargain/hb.env
+echo "HB_ENV_FILE=$HOME/.config/hunter-bargain/hb.env" >> .env
+```
+
+Edit `~/.config/hunter-bargain/hb.env` with your credentials:
 
 ```env
 SERPAPI_KEY=your-serpapi-key
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
+SMTP_SECURITY=tls
 SMTP_USER=you@gmail.com
 SMTP_PASSWORD=your-app-password
 EMAIL_FROM=you@gmail.com
@@ -253,14 +265,15 @@ User adds item → Stored in SQLite
 
 ## Configuration
 
-All configuration is via environment variables (`.env` file). The app ignores `.env` keys it does not use, such as Docker Compose's `HB_BIND_ADDR` and `APP_PORT`:
+All configuration is via environment variables (`.env` file, or the file `HB_ENV_FILE` names under Docker Compose). The app ignores `.env` keys it does not use, such as Docker Compose's `HB_BIND_ADDR`, `APP_PORT` and `HB_ENV_FILE`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///./data/hunter_bargain.db` | SQLAlchemy database URL |
 | `SERPAPI_KEY` | — | SerpAPI key (required for searches) |
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
-| `SMTP_PORT` | `587` | SMTP server port; `465` uses implicit TLS, any other port uses STARTTLS. Both verify the server certificate |
+| `SMTP_PORT` | `587` | SMTP server port; with `SMTP_SECURITY=tls`, `465` uses implicit TLS and any other port uses STARTTLS. Both verify the server certificate |
+| `SMTP_SECURITY` | `tls` | `tls`: TLS that verifies the server certificate, then a login with `SMTP_USER` and `SMTP_PASSWORD`. `none`: no TLS and no login, for a local test server such as Mailpit only. Any other value stops the app at startup |
 | `SMTP_TIMEOUT` | `30` | Seconds to wait for the SMTP server before giving up |
 | `SMTP_USER` | — | SMTP login username |
 | `SMTP_PASSWORD` | — | SMTP login password |
@@ -270,6 +283,7 @@ All configuration is via environment variables (`.env` file). The app ignores `.
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
 | `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
 | `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
+| `HB_ENV_FILE` | `.env` | Docker Compose only: the file whose settings the app gets. Point it at a file outside the checkout that holds the real credentials (see [Deployment](#deployment)). Compose reads it from the shell or the checkout's `.env` |
 | `LOG_LEVEL` | `info` | Logging level |
 
 ## Deployment
@@ -280,6 +294,9 @@ All configuration is via environment variables (`.env` file). The app ignores `.
 docker compose up --build -d
 ```
 
+- Settings: the app gets the file `HB_ENV_FILE` names, e.g. `~/.config/hunter-bargain/hb.env` (mode 600),
+  set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
+  the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
 - Health check: `curl http://localhost:8000/health`
 - SQLite data persisted via Docker volume (`app-data`)
 - Container auto-restarts on failure
@@ -299,6 +316,17 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 uvicorn hunter_bargain.main:app --reload
 ```
+
+To see alerts without sending real email, start Mailpit, a local mail server that keeps every
+message, with the `dev` Compose profile. With `.env` copied from `.env.example`, the app sends
+alerts to it, and its inbox is at http://127.0.0.1:8025:
+
+```bash
+docker compose --profile dev up --build    # the app and Mailpit
+docker compose --profile dev up -d mailpit # Mailpit alone, for uvicorn: set SMTP_HOST=127.0.0.1
+```
+
+If `.env` sets `HB_ENV_FILE`, the app gets the real settings instead; `HB_ENV_FILE=.env docker compose --profile dev up` overrides it.
 
 ## Development
 
@@ -323,6 +351,7 @@ ruff format .     # Format
 |---------|-------------|
 | `pip install -e ".[dev]"` | Install with dev dependencies |
 | `docker compose up --build` | Run with Docker |
+| `docker compose --profile dev up --build` | Run with Docker and Mailpit, which keeps alerts instead of sending them |
 | `pytest -v` | Run test suite (59 tests) |
 | `ruff check .` | Lint check |
 | `ruff format .` | Auto-format |
