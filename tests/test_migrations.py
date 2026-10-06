@@ -146,7 +146,6 @@ CASCADING_FK = [("items", "item_id", "id", "NO ACTION", "CASCADE")]
 def test_app_start_upgrades_a_database_from_before_migrations_and_keeps_every_row(tmp_path):
     db_file = _legacy_database(tmp_path / "hb.db")
     rows_before = _rows(db_file)
-    _start(tmp_path / "fresh.db")  # the schema an empty database migrates to
 
     result = _start_app(tmp_path, DATABASE_URL=f"sqlite:///{db_file}")  # the real app
 
@@ -154,11 +153,13 @@ def test_app_start_upgrades_a_database_from_before_migrations_and_keeps_every_ro
     assert _version(db_file) == [(_head(),)]
     assert _rows(db_file) == rows_before  # price record 4, whose item is gone, included
     assert _schema(db_file)["price_records"]["foreign_keys"] == CASCADING_FK
-    assert _schema(db_file) == _schema(tmp_path / "fresh.db")
-    assert _price_records_fk_names(db_file) == MODEL_FK_NAMES
     assert _query(db_file, "PRAGMA journal_mode") == [("wal",)]  # set by the app's engine
     # Migrating leaves the app's logging alone: its next startup message is still logged.
     assert "Starting scheduler..." in result.stderr
+    # The same schema as an empty database migrated to head.
+    _start(tmp_path / "fresh.db")
+    assert _schema(db_file) == _schema(tmp_path / "fresh.db")
+    assert _price_records_fk_names(db_file) == MODEL_FK_NAMES
 
 
 def test_empty_database_is_migrated_to_head_and_matches_the_models(tmp_path):
@@ -180,6 +181,7 @@ def test_baseline_revision_builds_the_schema_create_all_made(tmp_path):
     engine.dispose()
 
     assert _schema(baseline) == _schema(legacy)
+    assert _price_records_fk_names(baseline) == _price_records_fk_names(legacy) == [None]
 
 
 def test_downgrade_to_the_baseline_restores_the_schema_create_all_made(tmp_path):
@@ -191,6 +193,7 @@ def test_downgrade_to_the_baseline_restores_the_schema_create_all_made(tmp_path)
 
     command.downgrade(config, db.BASELINE_REVISION)
     assert _schema(db_file) == _schema(legacy)
+    assert _price_records_fk_names(db_file) == _price_records_fk_names(legacy)
     command.downgrade(config, "base")
     assert _schema(db_file) == {}
     engine.dispose()
