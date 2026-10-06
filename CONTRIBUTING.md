@@ -33,7 +33,8 @@ Be respectful, constructive, and kind. That's it. No 47-page document needed.
 
 - Python 3.12+
 - Docker & Docker Compose (for containerized runs)
-- A [SerpAPI](https://serpapi.com/) key (free tier works for development)
+- No API key for development: the tests use fakes and recorded SerpAPI responses. A
+  [SerpAPI](https://serpapi.com/) key is needed only to run real searches.
 
 ### Install
 
@@ -44,6 +45,8 @@ pip install -e ".[dev]"
 ```
 
 ### Configure
+
+The tests need no `.env`. To run the app, copy the example and fill in your values:
 
 ```bash
 cp .env.example .env
@@ -86,6 +89,7 @@ We follow strict GitFlow:
 | `main` | Production-ready releases only |
 | `develop` | Integration branch for features |
 | `feature/<name>` | New features (branch from `develop`) |
+| `fix/<name>`, `chore/<name>`, `ci/<name>` | Bug fixes, maintenance and CI changes (branch from `develop`) |
 | `release/<version>` | Release stabilization |
 | `hotfix/<name>` | Urgent production fixes |
 
@@ -97,18 +101,21 @@ git pull origin develop
 git checkout -b feature/my-awesome-feature
 ```
 
+A release fast-forwards `main` to `develop`, tags it `vX.Y.Z` and publishes a GitHub release
+from that version's `CHANGELOG.md` section.
+
 ### Commit Messages
 
 Write descriptive commit messages that explain *why*, not just *what*:
 
 ```
-feat: add Amazon search engine for broader price coverage
+fix: give each item its own session in the daily job
 
-The existing Google/Bing engines miss deals from Amazon marketplace.
-Adding a dedicated Amazon engine increases price coverage by ~40%.
+One shared session meant that an item deleted during the run, or one
+database error, ended the run for every item after it.
 ```
 
-Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
+Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`
 
 ## Pull Request Process
 
@@ -116,7 +123,8 @@ Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
 2. Ensure lint is clean: `ruff check . && ruff format --check .`
 3. Update `CHANGELOG.md` with your changes under `[Unreleased]`
 4. Create a PR targeting `develop` (never `main` directly)
-5. Fill in the PR template with a clear description
+5. Describe what changed and why, link the issue (`Fixes #N`), and list the commands you ran with
+   their results
 6. Request review from a maintainer
 
 ### PR Requirements
@@ -141,14 +149,16 @@ Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
 
 - **Minimal changes**: Impact as little code as possible
 - **Root causes**: Fix the actual problem, not symptoms
-- **No type suppression**: Never use `as any`, `# type: ignore`, `@ts-ignore`
+- **No type suppression**: Never use `# type: ignore`
 - **No empty catch blocks**: Always handle or log errors
-- **Zero dummy data**: Never hardcode fake responses or placeholder values
+- **No fake data shown as real**: No placeholder values or invented responses in the app. Fakes and
+  recorded, key-scrubbed SerpAPI responses in tests are not dummy data.
 
 ### Testing
 
 - Use `pytest` with fixtures from `conftest.py`
-- Mock external calls (SerpAPI, SMTP) — never make real network calls in tests
+- Use fakes or recorded, key-scrubbed responses for external calls (SerpAPI, SMTP); never make
+  real network calls in tests
 - Test both happy paths and error cases
 
 ## Reporting Bugs

@@ -11,3 +11,5 @@ build/
 .eggs/
 data/
 .venv/
+# Agent session notes stay local
+tasks/
