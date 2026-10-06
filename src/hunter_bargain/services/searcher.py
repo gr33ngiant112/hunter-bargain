@@ -6,6 +6,7 @@ persists price records, and triggers notifications when targets are met.
 
 from __future__ import annotations
 
+import datetime as dt
 import itertools
 import logging
 import re
@@ -13,6 +14,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from hunter_bargain.config import settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult, PriceRecordResponse
 from hunter_bargain.services.engines.base import EngineError, SearchEngine, SearchResult
@@ -529,6 +531,29 @@ def _persist_results(results: list[SearchResult], item: Item, db: Session) -> li
     return records
 
 
+def _now() -> dt.datetime:
+    """The current time in UTC; the tests replace it with a frozen clock."""
+    return dt.datetime.now(dt.UTC)
+
+
+def _alert_due(item: Item, price: float, now: dt.datetime) -> bool:
+    """Whether a price that meets the item's target should be emailed (#9).
+
+    The first one is. After that, only a new low, at least ALERT_MIN_DROP_PCT percent below the
+    last alert's price, or a price still on target ALERT_COOLDOWN_DAYS after the last alert: a
+    deal that lasts sends one email, not one per check.
+    """
+    if item.last_alert_price is None or item.last_alerted_at is None:
+        return True
+    last_price = item.last_alert_price
+    if price < last_price and price <= last_price * (1 - settings.alert_min_drop_pct / 100):
+        return True
+    last_alerted_at = item.last_alerted_at
+    if last_alerted_at.tzinfo is None:  # SQLite returns it without a zone; it is stored in UTC
+        last_alerted_at = last_alerted_at.replace(tzinfo=dt.UTC)
+    return (now - last_alerted_at).total_seconds() >= settings.alert_cooldown_days * 86400
+
+
 def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     """Execute a price check across all engines for a single item.
 
@@ -536,7 +561,8 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     2. Query each registered engine; an engine that cannot search is logged at ERROR and
        listed in engine_errors, so a failed search is not reported as "no results".
     3. Persist all price observations.
-    4. If any price meets the target, fire an email notification.
+    4. If the lowest price meets the target and no earlier alert covers it (_alert_due), email
+       an alert, and record its price and time once it is sent.
     5. Return structured results.
     """
     query = _build_query(item)
@@ -566,6 +592,7 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
 
     lowest: SearchResult | None = relevant_results[0] if relevant_results else None
 
+    alert_sent = False
     if lowest and item.target_price and lowest.price <= item.target_price:
         logger.info(
             "Target met for item %d (%r): $%.2f <= $%.2f",
@@ -574,7 +601,20 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
             lowest.price,
             item.target_price,
         )
-        send_price_alert(item=item, result=lowest)
+        now = _now()
+        if not _alert_due(item, lowest.price, now):
+            logger.info(
+                "Item %d: alert already sent at $%.2f; no new email for $%.2f",
+                item.id,
+                item.last_alert_price,
+                lowest.price,
+            )
+        elif send_price_alert(item=item, result=lowest):
+            alert_sent = True
+            # Only a sent alert counts: after a failed send, the next check tries again.
+            item.last_alert_price = lowest.price
+            item.last_alerted_at = now
+            db.commit()
 
     return PriceCheckResult(
         item_id=item.id,
@@ -586,4 +626,5 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
         results_count=len(relevant_results),
         records=[PriceRecordResponse.model_validate(r) for r in records],
         engine_errors=engine_errors,
+        alert_sent=alert_sent,
     )

@@ -28,6 +28,12 @@ class Item(Base):
     target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Email address to notify for this item
     notify_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The last alert email that was sent: its price and when (#9). None until the first alert,
+    # and again after PATCH changes target_price, so that the next price on target is emailed.
+    last_alert_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_alerted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
