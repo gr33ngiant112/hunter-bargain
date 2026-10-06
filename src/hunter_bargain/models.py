@@ -21,7 +21,8 @@ class Item(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    # Optional keywords to refine searches (e.g. "64GB midnight" for an iPhone)
+    # Optional comma-separated terms (e.g. "64GB, midnight" for an iPhone): added to the search
+    # query, and every word of every term must be in a listing's title (services/searcher.py)
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Target price — notify when a result is at or below this threshold
     target_price: Mapped[float | None] = mapped_column(Float, nullable=True)

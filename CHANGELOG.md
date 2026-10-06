@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Keywords now filter results as well as refine the search: every word of each comma-separated
+  keyword term must appear in a listing's title (`256GB` also matches "256 GB"). Second-hand
+  listings are skipped: Google Shopping rows with a `second_hand_condition`, and titles saying
+  renewed, refurbished, restored, used, pre-owned, open box or for parts.
+
+### Fixed
+
+- Relevance filter: previous-generation, look-alike and refurbished listings no longer alert (an
+  iPhone 13 Pro for an iPhone 15 Pro, a WH-1000XM4 for a WH-1000XM5, a PlayStation 4 for a
+  PlayStation 5), and routers, camera kits, vacuums, tablets, laptops and monitors are no longer
+  rejected for words such as "Band", "Lens", "Filter", "Screen", "Keyboard" or "Stand" in their
+  titles. An item name with no word to match, such as "The", no longer accepts every listing.
+
 ## [0.4.0] - 2026-10-05
 
 No earlier version was tagged, and the package reported 0.1.0 until this release. The version
