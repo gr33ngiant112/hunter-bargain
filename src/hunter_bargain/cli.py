@@ -93,7 +93,12 @@ def cli(ctx: click.Context, url: str, timeout: float) -> None:
 @click.option(
     "-t", "--target-price", type=float, default=None, help="Alert when price drops to this."
 )
-@click.option("-k", "--keywords", default=None, help="Extra search keywords.")
+@click.option(
+    "-k",
+    "--keywords",
+    default=None,
+    help='Comma-separated terms, e.g. "256GB,unlocked": a listing\'s title must have every word.',
+)
 @click.pass_context
 def add(
     ctx: click.Context, name: str, email: str, target_price: float | None, keywords: str | None
@@ -179,7 +184,12 @@ def list_items(ctx: click.Context) -> None:
 @click.option("-n", "--name", default=None, help="New product name.")
 @click.option("-e", "--email", default=None, help="New notification email.")
 @click.option("-t", "--target-price", type=float, default=None, help="New target price.")
-@click.option("-k", "--keywords", default=None, help="New search keywords.")
+@click.option(
+    "-k",
+    "--keywords",
+    default=None,
+    help="New keywords: comma-separated terms; a listing's title must have every word.",
+)
 @click.pass_context
 def update(
     ctx: click.Context,

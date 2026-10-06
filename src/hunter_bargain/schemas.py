@@ -65,7 +65,13 @@ class ItemCreate(BaseModel):
     """Schema for creating a new tracked item."""
 
     name: str = Field(..., min_length=1, max_length=255, description="Product name to search for")
-    keywords: str | None = Field(None, description="Extra search keywords to refine results")
+    keywords: str | None = Field(
+        None,
+        description=(
+            'Comma-separated terms such as "256GB, unlocked", added to the search query. A listing '
+            "counts only if its title has every word of every term."
+        ),
+    )
     target_price: float | None = Field(
         None,
         gt=0,
