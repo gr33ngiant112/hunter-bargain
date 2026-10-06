@@ -1,7 +1,10 @@
 name: CI
 
 on:
+  # Draft PRs skip every job (the `if` on each); marking a PR ready for review runs CI. A push
+  # has no pull_request, and null == false is true in Actions expressions, so pushes run every job.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [develop]
 
@@ -15,6 +18,7 @@ concurrency:
 jobs:
   test:
     name: test
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,6 +42,7 @@ jobs:
 
   secret-scan:
     name: secret-scan
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -61,6 +66,7 @@ jobs:
 
   dependency-scan:
     name: dependency-scan
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

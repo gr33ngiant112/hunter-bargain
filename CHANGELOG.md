@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   renewed, refurbished, restored, used, pre-owned, open box or for parts.
 - `AGENTS.md` is a short, hand-written guide for coding agents: commands, what not to do, and
   facts the code does not show. Workflow and style rules are in `CONTRIBUTING.md` only.
+- CI skips draft pull requests and runs when a pull request is marked ready for review
 
 ### Removed
 
