@@ -50,8 +50,13 @@ class PriceRecord(Base):
     __tablename__ = "price_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # ON DELETE CASCADE needs foreign key enforcement, which db.py turns on for SQLite. The name
+    # is the one the migration gave the constraint (migrations/versions/84ea40d46025_*.py).
     item_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("items.id"), nullable=False, index=True
+        Integer,
+        ForeignKey("items.id", ondelete="CASCADE", name="fk_price_records_item_id_items"),
+        nullable=False,
+        index=True,
     )
     price: Mapped[float] = mapped_column(Float, nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
