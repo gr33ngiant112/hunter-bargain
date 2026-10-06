@@ -5,9 +5,11 @@ from unittest.mock import patch
 
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm import Session, sessionmaker
 
 from hunter_bargain.config import Settings, settings
-from hunter_bargain.models import Item
+from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services import scheduler as scheduler_module
 from hunter_bargain.services.scheduler import _scheduled_price_check, start_scheduler
@@ -75,3 +77,171 @@ def test_daily_job_runs_in_the_configured_time_zone(daily_trigger, monkeypatch, 
 
     # APScheduler turns "UTC" into datetime.timezone.utc and other names into ZoneInfo objects.
     assert str(daily_trigger().timezone) == zone
+
+
+def _empty_result(item: Item) -> PriceCheckResult:
+    return PriceCheckResult(
+        item_id=item.id,
+        item_name=item.name,
+        lowest_price=None,
+        lowest_source=None,
+        lowest_url=None,
+        results_count=0,
+        records=[],
+    )
+
+
+@pytest.fixture
+def three_items(db_session):
+    """Three items in the test database; returns their ids in order."""
+    items = [Item(name=name, notify_email="a@x.com") for name in ("First", "Second", "Third")]
+    db_session.add_all(items)
+    db_session.commit()
+    return [item.id for item in items]
+
+
+def _sessions(db_session):
+    """Sessions on the test database, as SessionLocal makes them on the real one."""
+    return sessionmaker(bind=db_session.get_bind(), autocommit=False, autoflush=False)
+
+
+def _run_job(db_session, fake_check):
+    """Run the daily job against the test database, with run_price_check faked by fake_check."""
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+    ):
+        _scheduled_price_check()
+
+
+def test_item_deleted_during_the_run_does_not_stop_the_rest(db_session, three_items):
+    """#10: deleting the second item during the first item's check skips only that item."""
+    first, second, third = three_items
+    checked: list[int] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        if item.id == first:
+            # A DELETE through the API's own session while the job runs, then the commit that
+            # run_price_check makes after saving its price records.
+            with _sessions(db_session)() as api_db:
+                api_db.delete(api_db.get(Item, second))
+                api_db.commit()
+            db.commit()
+        return _empty_result(item)
+
+    _run_job(db_session, fake_check)
+
+    assert checked == [first, third]
+
+
+def test_database_error_on_one_item_does_not_stop_the_rest(db_session, three_items):
+    """#10: a failed write for one item is rolled back, and the next item's check is saved."""
+    first, second, third = three_items
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        # price is NOT NULL, so the second item's flush fails.
+        price = None if item.id == second else 9.99
+        db.add(PriceRecord(item_id=item.id, price=price, source="google_shopping"))
+        db.commit()
+        return _empty_result(item)
+
+    _run_job(db_session, fake_check)
+
+    db_session.expire_all()
+    saved = sorted(record.item_id for record in db_session.query(PriceRecord))
+    assert saved == [first, third]
+
+
+def test_failed_check_is_logged_with_the_item_id_and_name(db_session, three_items, caplog):
+    first, second, third = three_items
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        if item.id == second:
+            db.add(PriceRecord(item_id=item.id, price=None, source="google_shopping"))
+            db.commit()
+        return _empty_result(item)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        _run_job(db_session, fake_check)
+
+    [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert failure.getMessage() == f"Price check failed for item {second} ('Second')"
+    assert failure.exc_info is not None and failure.exc_info[0] is IntegrityError
+
+
+def test_check_that_fails_after_its_item_was_deleted_is_logged_and_the_run_continues(
+    db_session, three_items, caplog
+):
+    """#10: the failure is logged with the id and name read before the check.
+
+    run_price_check commits once it has saved its price records, which expires the item. If the
+    item is deleted after that and the check then fails, reading item.name in the handler would
+    raise ObjectDeletedError again and end the run.
+    """
+    first, second, third = three_items
+    checked: list[int] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        if item.id == second:
+            db.commit()
+            with _sessions(db_session)() as api_db:
+                api_db.delete(api_db.get(Item, second))
+                api_db.commit()
+            raise RuntimeError("alert could not be sent")
+        return _empty_result(item)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        _run_job(db_session, fake_check)
+
+    assert checked == [first, second, third]
+    [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert failure.getMessage() == f"Price check failed for item {second} ('Second')"
+
+
+def test_database_error_loading_an_item_does_not_stop_the_rest(
+    db_session, three_items, monkeypatch, caplog
+):
+    """#10: a DB error while the job loads one item (a locked database) skips only that item."""
+    first, second, third = three_items
+    load = Session.get
+
+    def get(self, entity, ident, *args, **kwargs):
+        if entity is Item and ident == second:
+            raise OperationalError("SELECT items", {}, Exception("database is locked"))
+        return load(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "get", get)
+    checked: list[int] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        return _empty_result(item)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        _run_job(db_session, fake_check)
+
+    assert checked == [first, third]
+    [failure] = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert failure.getMessage() == f"Could not load item {second} for its price check"
+    assert failure.exc_info is not None and failure.exc_info[0] is OperationalError
+
+
+def test_failed_check_leaves_none_of_its_writes_behind(db_session, three_items):
+    """#10: closing the item's session rolls back what a failed check wrote but did not commit."""
+    first, second, third = three_items
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        db.add(PriceRecord(item_id=item.id, price=9.99, source="google_shopping"))
+        if item.id == second:
+            db.flush()  # written to the database, not committed
+            raise RuntimeError("alert could not be sent")
+        db.commit()
+        return _empty_result(item)
+
+    _run_job(db_session, fake_check)
+
+    db_session.expire_all()
+    saved = sorted(record.item_id for record in db_session.query(PriceRecord))
+    assert saved == [first, third]
