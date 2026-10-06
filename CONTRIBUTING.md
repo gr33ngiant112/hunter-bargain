@@ -66,6 +66,16 @@ ruff check .
 ruff format .
 ```
 
+### Pre-commit Hooks
+
+Ruff, mypy (on `src`), a YAML check and a private-key check run before every commit, whichever
+editor or agent makes it. Install the hooks once per clone, inside the venv:
+
+```bash
+pre-commit install
+pre-commit run --all-files   # the whole tree, e.g. after changing the hooks
+```
+
 ### Run Locally
 
 ```bash
