@@ -39,5 +39,5 @@ def downgrade() -> None:
     # one, so the table is rebuilt with item_id given here in place of the reflected column
     # and its foreign key.
     item_id = sa.Column("item_id", sa.Integer(), sa.ForeignKey("items.id"), nullable=False)
-    with op.batch_alter_table("price_records", recreate="always", reflect_args=[item_id]):
+    with op.batch_alter_table("price_records", recreate="always", reflect_args=(item_id,)):
         pass
