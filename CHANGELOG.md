@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `hb --timeout SECONDS`: how long the CLI waits for the server (default 60; it was a fixed 30,
+  less than a slow check of both engines can take)
+
+### Changed
+
+- `POST /api/v1/prices/check-all` answers 202 at once and checks every item in the background,
+  as the daily job does: results go to the price history, the log and alert emails. It answers
+  409 while a check of all items, its own or the daily job's, is running.
+- `hb check` without an item ID starts that background check and prints no prices;
+  `hb check ITEM_ID` still prints the item's prices
+
+### Fixed
+
+- The daily check is skipped, with a warning in the log, while a check of all items started
+  through the API runs, so no item is checked and alerted on twice
+- The CLI prints a clear error and exits 1 when the server does not answer in time or the
+  request fails, instead of a traceback
+
+### Upgrading
+
+- Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
+  for all items, must change: check-all now answers `{"status": "started"}`. Use
+  `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
+
 ## [0.4.0] - 2026-10-05
 
 No earlier version was tagged, and the package reported 0.1.0 until this release. The version
