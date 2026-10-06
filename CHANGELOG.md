@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a private-key check before each commit; `pre-commit install` once per clone
 - `hb --timeout SECONDS`: how long the CLI waits for the server (default 60; it was a fixed 30,
   less than a slow check of both engines can take)
+- `HB_ENV_FILE`: Docker Compose gives the app the settings in that file (default `.env`), so the
+  real credentials can live outside the checkout, e.g. in `~/.config/hunter-bargain/hb.env`
+- `SMTP_SECURITY`: `tls` (the default, as before) or `none`, which sends without TLS and without
+  a login, for a local test server only
+- A Mailpit service under the `dev` Compose profile: `docker compose --profile dev up` keeps alerts
+  in a local inbox at http://127.0.0.1:8025 instead of sending them
+- `.claude/settings.json`: Claude Code may not read or edit `.env` or `~/.config/hunter-bargain/`,
+  and asks before running `docker compose`, `uvicorn`, `hb check` or `curl`
 
 ### Changed
 
@@ -32,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AGENTS.md` is a short, hand-written guide for coding agents: commands, what not to do, and
   facts the code does not show. Workflow and style rules are in `CONTRIBUTING.md` only.
 - CI skips draft pull requests and runs when a pull request is marked ready for review
+- `.env.example` holds development values: alerts go to Mailpit, and the SerpAPI key and SMTP
+  login are empty
 
 ### Removed
 
@@ -70,6 +80,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The database now uses SQLite's WAL mode, so recent writes can sit in `hunter_bargain.db-wal`
   beside the database file. Back up with the app stopped and copy any `-wal` and `-shm` files
   too, or use `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
+- Move the real settings out of the checkout. From the checkout, with the app's settings in
+  `.env`: `mkdir -p ~/.config/hunter-bargain && install -m 600 .env ~/.config/hunter-bargain/hb.env`,
+  then `cp .env.example .env` and `echo "HB_ENV_FILE=$HOME/.config/hunter-bargain/hb.env" >> .env`.
+  Copy any `HB_BIND_ADDR` or `APP_PORT` you had set into the new `.env` as well: Compose reads
+  those from the checkout's `.env` or the shell only. `docker compose up -d` then recreates the
+  app with the same settings.
 - Keywords are now required words in a listing's title. An item whose keywords were search hints
   that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
   stop matching: change them with `hb update ITEM_ID --keywords "..."` or

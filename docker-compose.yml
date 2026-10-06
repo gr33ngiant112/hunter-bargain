@@ -9,7 +9,10 @@ services:
       # host's LAN address) publishes it on the network; the API has no authentication of its own.
       - "${HB_BIND_ADDR:-127.0.0.1}:${APP_PORT:-8000}:8000"
     env_file:
-      - .env
+      # The app's settings. HB_ENV_FILE names a file outside the checkout for real credentials
+      # (README "Deployment"). Compose reads HB_ENV_FILE, HB_BIND_ADDR and APP_PORT from the
+      # shell or the checkout's .env, never from this file.
+      - ${HB_ENV_FILE:-.env}
     volumes:
       # Persist the SQLite database across container restarts
       - app-data:/app/data
@@ -20,6 +23,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  # Development only: a local mail server that keeps every message it receives, so alerts can be
+  # checked without sending real email. `docker compose --profile dev up` starts it next to the
+  # app; plain `docker compose up` does not. .env.example's SMTP values point the app at it.
+  # Read the alerts at http://127.0.0.1:8025.
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    profiles: ["dev"]
+    ports:
+      - "127.0.0.1:8025:8025" # web inbox and API
+      - "127.0.0.1:1025:1025" # SMTP, for the app run on the host (uvicorn)
 
 volumes:
   app-data:
