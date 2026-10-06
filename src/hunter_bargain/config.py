@@ -1,6 +1,6 @@
 """Application configuration loaded from environment variables."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import EmailStr, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode
@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # SMTP email
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
+    # "tls": TLS that verifies the server certificate (implicit on port 465, STARTTLS on any
+    # other port), then a login. "none": no TLS and no login, for a local test server such as
+    # Mailpit only. Any other value fails validation, so the app does not start.
+    smtp_security: Literal["tls", "none"] = "tls"
     smtp_timeout: float = 30  # seconds, for the connect and each SMTP command
     smtp_user: str = ""
     smtp_password: SecretStr = SecretStr("")

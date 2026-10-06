@@ -119,7 +119,10 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
     Returns True if the email was sent successfully, False otherwise.
     Fails gracefully — never raises to the caller.
     """
-    if not settings.smtp_user or not settings.smtp_password:
+    # SMTP_SECURITY=none is for a local test server such as Mailpit: no TLS and no login, so it
+    # needs no credentials. Every other value takes the TLS path.
+    tls = settings.smtp_security != "none"
+    if tls and (not settings.smtp_user or not settings.smtp_password):
         logger.warning("SMTP not configured — skipping email notification for item %d", item.id)
         return False
 
@@ -152,7 +155,7 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
         # Verify the server certificate and hostname on both paths: without a context,
         # starttls() skips verification.
         context = ssl.create_default_context()
-        implicit_tls = settings.smtp_port == 465  # SMTPS: TLS from the first byte
+        implicit_tls = tls and settings.smtp_port == 465  # SMTPS: TLS from the first byte
         connection: smtplib.SMTP  # SMTP_SSL is a subclass
         if implicit_tls:
             connection = smtplib.SMTP_SSL(
@@ -167,9 +170,11 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
             )
 
         with connection as server:
-            if not implicit_tls:
-                server.starttls(context=context)
-            server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
+            # Without TLS there is no login either: the password never crosses a plain connection.
+            if tls:
+                if not implicit_tls:
+                    server.starttls(context=context)
+                server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
             server.send_message(msg)
 
         logger.info("Price alert sent to %s for item %d", item.notify_email, item.id)
