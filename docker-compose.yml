@@ -9,7 +9,10 @@ services:
       # host's LAN address) publishes it on the network; the API has no authentication of its own.
       - "${HB_BIND_ADDR:-127.0.0.1}:${APP_PORT:-8000}:8000"
     env_file:
-      - .env
+      # The app's settings. HB_ENV_FILE names a file outside the checkout for real credentials
+      # (README "Deployment"). Compose reads HB_ENV_FILE, HB_BIND_ADDR and APP_PORT from the
+      # shell or the checkout's .env, never from this file.
+      - ${HB_ENV_FILE:-.env}
     volumes:
       # Persist the SQLite database across container restarts
       - app-data:/app/data
