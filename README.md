@@ -282,6 +282,12 @@ docker compose up --build -d
 
 - Health check: `curl http://localhost:8000/health`
 - SQLite data persisted via Docker volume (`app-data`)
+- Each start migrates the database to the app's schema before it serves requests. Run one app
+  process, as the image does (one uvicorn worker), so that two never migrate it at once, and back
+  the database up before an upgrade (CHANGELOG.md, "Upgrading").
+- The database uses SQLite's WAL mode: recent writes can sit in `hunter_bargain.db-wal` beside
+  it. Back up with the app stopped, copying any `-wal` and `-shm` files too, or use
+  `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
 - Container auto-restarts on failure
 - By default the port is published on 127.0.0.1 only. On the host, use `curl http://localhost:8000/...` or
   run the CLI inside the container: `docker compose exec app hb ls`. To reach the API from other machines

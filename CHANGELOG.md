@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Database migrations (Alembic, in `src/hunter_bargain/migrations`): the app migrates its database
+  as it starts, so a release can change the schema of an existing database. `alembic.ini` serves
+  the `alembic` command in development, and CI fails when the models need a migration that does
+  not exist yet.
 - Pre-commit hooks (`.pre-commit-config.yaml`): Ruff lint and format, mypy on `src`, a YAML check
   and a private-key check before each commit; `pre-commit install` once per clone
 - `hb --timeout SECONDS`: how long the CLI waits for the server (default 60; it was a fixed 30,
@@ -37,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- SQLite enforces foreign keys: deleting an item deletes its price records in the database too
+  (ON DELETE CASCADE), and a price record for an item that does not exist is refused. Price
+  records left behind by items deleted earlier are kept.
 - The daily check is skipped, with a warning in the log, while a check of all items started
   through the API runs, so no item is checked and alerted on twice
 - The CLI prints a clear error and exits 1 when the server does not answer in time or the
@@ -55,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
   for all items, must change: check-all now answers `{"status": "started"}`. Use
   `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
+- Back up the database first: stop the app and copy its data directory (in Docker, the
+  `app-data` volume). The first start of this version marks an existing database as the schema
+  it already has, then migrates it; its rows are kept. There is nothing to run by hand.
+- Run one app process, as the image does: migrations run as the app starts, and two processes
+  starting together could both migrate the same database.
+- The database now uses SQLite's WAL mode, so recent writes can sit in `hunter_bargain.db-wal`
+  beside the database file. Back up with the app stopped and copy any `-wal` and `-shm` files
+  too, or use `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
 - Keywords are now required words in a listing's title. An item whose keywords were search hints
   that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
   stop matching: change them with `hb update ITEM_ID --keywords "..."` or

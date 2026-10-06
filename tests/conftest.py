@@ -13,12 +13,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from serpapi import SerpApiClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from hunter_bargain.config import settings
-from hunter_bargain.db import Base, get_db
+from hunter_bargain.db import Base, create_db_engine, get_db
 from hunter_bargain.main import app
 
 # notify_email values the API tests post. Item create/update return 422 for an address outside
@@ -38,15 +37,11 @@ API_TEST_RECIPIENTS = [
 def db_session():
     """In-memory SQLite database session for tests.
 
-    Uses StaticPool so that all threads share the same in-memory database
-    connection — required because FastAPI's TestClient dispatches requests
-    in a worker thread via anyio.
+    The app's engine settings, so foreign keys are enforced as in production. Uses StaticPool
+    so that all threads share the same in-memory database connection — required because
+    FastAPI's TestClient dispatches requests in a worker thread via anyio.
     """
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    engine = create_db_engine("sqlite:///:memory:", poolclass=StaticPool)
     Base.metadata.create_all(bind=engine)
     test_session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     session = test_session()

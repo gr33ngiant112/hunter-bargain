@@ -39,6 +39,13 @@ jobs:
           ruff format --check .
       - name: Test
         run: pytest -q
+      # An empty database migrates to head, and the models match it: no migration is missing.
+      - name: Migrations
+        env:
+          DATABASE_URL: sqlite:///${{ runner.temp }}/migrations.db
+        run: |
+          alembic upgrade head
+          alembic check
       - name: Build
         run: uv build
 

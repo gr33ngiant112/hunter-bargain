@@ -114,6 +114,18 @@ git checkout -b feature/my-awesome-feature
 A release fast-forwards `main` to `develop`, tags it `vX.Y.Z` and publishes a GitHub release
 from that version's `CHANGELOG.md` section.
 
+### Schema Changes
+
+The app migrates its database at startup with Alembic. After changing a model, generate a
+migration against a throwaway database, then review the new file in
+`src/hunter_bargain/migrations/versions/` (SQLite alters tables in batch mode):
+
+```bash
+export DATABASE_URL=sqlite:///scratch.db
+alembic upgrade head
+alembic revision --autogenerate -m "describe the change"
+```
+
 ### Commit Messages
 
 Write descriptive commit messages that explain *why*, not just *what*:
