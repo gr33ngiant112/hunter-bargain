@@ -7,10 +7,12 @@ FastAPI + SQLite price tracker: SerpAPI (Google and Bing Shopping) searches, a d
 - Setup, inside a venv: `pip install -e ".[dev]"`
 - Verify before saying done: `ruff check . && ruff format --check . && pytest -q`
 - Run: `uvicorn hunter_bargain.main:app --reload`, or `docker compose up --build`
+- See alerts without real email: `cp .env.example .env`, then `docker compose --profile dev up --build`; Mailpit shows them at http://127.0.0.1:8025
 
 ## Do not
 
-- Do not read, print or edit `.env`.
+- Do not read, print or edit `.env` or the real settings file outside the checkout (`~/.config/hunter-bargain/`). `.claude/settings.json` denies both to Claude Code.
+- Do not run `docker compose`, `uvicorn`, `hb check` or `curl` without asking first: they can start or call the app with real settings. `.claude/settings.json` makes Claude Code ask.
 - Do not call SerpAPI or send real email to check a change. Use tests with fakes and recorded, key-scrubbed fixtures; these are not "dummy data".
 - Do not add a dependency by guessing its name. Once `uv.lock` exists, use `uv add`.
 - Do not refactor code unrelated to the task.
