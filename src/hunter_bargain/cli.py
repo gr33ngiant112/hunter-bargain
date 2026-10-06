@@ -9,6 +9,10 @@ import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 
+# Seconds to wait for the server's answer. A single check searches two engines in turn, and the
+# server gives each SerpAPI request up to 20 s, so a slow but healthy check can take about 40 s.
+DEFAULT_TIMEOUT = 60.0
+
 
 def _base_url(ctx: click.Context) -> str:
     return ctx.obj["base_url"]
@@ -20,11 +24,21 @@ def _request(
     *,
     json: dict[str, Any] | None = None,
 ) -> httpx.Response:
+    timeout = click.get_current_context().obj["timeout"]
     try:
-        resp = httpx.request(method, url, json=json, timeout=30)
+        resp = httpx.request(method, url, json=json, timeout=timeout)
     except httpx.ConnectError:
         click.secho(f"Error: cannot connect to {url}", fg="red", err=True)
         click.echo("Is the hunter-bargain server running?", err=True)
+        sys.exit(1)
+    except httpx.TimeoutException:
+        click.secho(f"Error: no answer from {url} within {timeout:g} s", fg="red", err=True)
+        click.echo(
+            "The server may still finish the request. Use --timeout to wait longer.", err=True
+        )
+        sys.exit(1)
+    except httpx.HTTPError as e:
+        click.secho(f"Error: request to {url} failed ({type(e).__name__})", fg="red", err=True)
         sys.exit(1)
     return resp
 
@@ -57,12 +71,20 @@ def _print_item(item: dict[str, Any]) -> None:
     show_default=True,
     help="Base URL of the hunter-bargain API server.",
 )
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0, min_open=True),
+    default=DEFAULT_TIMEOUT,
+    show_default=True,
+    help="Seconds to wait for the server to answer.",
+)
 @click.version_option(package_name="hunter-bargain")
 @click.pass_context
-def cli(ctx: click.Context, url: str) -> None:
+def cli(ctx: click.Context, url: str, timeout: float) -> None:
     """hunter-bargain CLI — manage tracked items from the terminal."""
     ctx.ensure_object(dict)
     ctx.obj["base_url"] = url.rstrip("/")
+    ctx.obj["timeout"] = timeout
 
 
 @cli.command()
@@ -219,12 +241,14 @@ def update(
 def check(ctx: click.Context, item_id: int | None) -> None:
     """Trigger an on-demand price check.
 
-    If ITEM_ID is given, checks that item only. Otherwise checks all items.
+    If ITEM_ID is given, checks that item and prints its prices. Otherwise starts a check of all
+    items in the background, as the daily job does: alerts are emailed, and nothing is printed.
     """
-    if item_id is not None:
-        resp = _request("POST", f"{_base_url(ctx)}/api/v1/prices/check/{item_id}")
-    else:
-        resp = _request("POST", f"{_base_url(ctx)}/api/v1/prices/check-all")
+    if item_id is None:
+        _start_check_all(ctx)
+        return
+
+    resp = _request("POST", f"{_base_url(ctx)}/api/v1/prices/check/{item_id}")
 
     if resp.status_code == 404:
         click.secho(f"Item {item_id} not found.", fg="red", err=True)
@@ -233,7 +257,7 @@ def check(ctx: click.Context, item_id: int | None) -> None:
         click.secho(f"Error {resp.status_code}: {resp.text}", fg="red", err=True)
         sys.exit(1)
 
-    results = resp.json() if item_id is None else [resp.json()]
+    results = [resp.json()]
 
     for result in results:
         name = _clean(result["item_name"])
@@ -257,3 +281,16 @@ def check(ctx: click.Context, item_id: int | None) -> None:
         # A failed engine may have missed a lower price, so its error shows either way.
         for error in engine_errors:
             click.echo(f"    engine error: {_clean(error)}")
+
+
+def _start_check_all(ctx: click.Context) -> None:
+    resp = _request("POST", f"{_base_url(ctx)}/api/v1/prices/check-all")
+    if resp.status_code == 202:
+        click.secho("Started a price check of all items in the background.", fg="green")
+        click.echo("Alerts are emailed as usual; run 'hb check ITEM_ID' to see one item's prices.")
+    elif resp.status_code == 409:
+        click.secho("A price check of all items is already running.", fg="yellow", err=True)
+        sys.exit(1)
+    else:
+        click.secho(f"Error {resp.status_code}: {resp.text}", fg="red", err=True)
+        sys.exit(1)

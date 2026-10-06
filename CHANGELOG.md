@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `hb --timeout SECONDS`: how long the CLI waits for the server (default 60; it was a fixed 30,
+  less than a slow check of both engines can take)
+
 ### Changed
 
+- `POST /api/v1/prices/check-all` answers 202 at once and checks every item in the background,
+  as the daily job does: results go to the price history, the log and alert emails. It answers
+  409 while a check of all items, its own or the daily job's, is running.
+- `hb check` without an item ID starts that background check and prints no prices;
+  `hb check ITEM_ID` still prints the item's prices
 - Keywords now filter results as well as refine the search: every word of each comma-separated
   keyword term must appear in a listing's title (`256GB` also matches "256 GB"). Second-hand
   listings are skipped: Google Shopping rows with a `second_hand_condition`, and titles saying
@@ -16,11 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The daily check is skipped, with a warning in the log, while a check of all items started
+  through the API runs, so no item is checked and alerted on twice
+- The CLI prints a clear error and exits 1 when the server does not answer in time or the
+  request fails, instead of a traceback
 - Relevance filter: previous-generation, look-alike and refurbished listings no longer alert (an
   iPhone 13 Pro for an iPhone 15 Pro, a WH-1000XM4 for a WH-1000XM5, a PlayStation 4 for a
   PlayStation 5), and routers, camera kits, vacuums, tablets, laptops and monitors are no longer
   rejected for words such as "Band", "Lens", "Filter", "Screen", "Keyboard" or "Stand" in their
   titles. An item name with no word to match, such as "The", no longer accepts every listing.
+
+### Upgrading
+
+- Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
+  for all items, must change: check-all now answers `{"status": "started"}`. Use
+  `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
 
 ## [0.4.0] - 2026-10-05
 
