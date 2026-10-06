@@ -74,6 +74,10 @@ GOOGLE_LIRA = {
     "extracted_price": 28782.94,
     "alternative_price": {"price": "€608", "extracted_price": 608, "currency": "€"},
 }
+# The same page's JSON structure overview documents second_hand_condition as "Description of
+# condition when the product is second hand (Ex: 'used', or 'refurbished')". No example row on the
+# page carries one, so the tests add it to GOOGLE_FOLGERS.
+SECOND_HAND_CONDITIONS = ["used", "refurbished"]
 
 # Bing Shopping, https://serpapi.com/bing-shopping-api: "Example results for q: jacket", rows 1
 # and 2. link is a bing.com/ck/a redirect; external_link is the seller's own page.
@@ -446,6 +450,19 @@ class TestGoogleShoppingEngine:
 
         assert (result.price, result.currency) == (5.88, "USD")
 
+    @pytest.mark.parametrize("condition", SECOND_HAND_CONDITIONS)
+    def test_second_hand_condition_is_the_result_condition(self, google_search, condition):
+        """A row's second_hand_condition is the result's condition; without one, None (#3)."""
+        row = {**GOOGLE_FOLGERS, "second_hand_condition": condition}
+        _serve(google_search, row, GOOGLE_BUSTELO)
+
+        results = GoogleShoppingEngine().search("coffee")
+
+        assert [(r.title, r.condition) for r in results] == [
+            ("Bustelo Coffee Espresso", None),
+            ("Folgers Classic Roast Ground Coffee", condition),
+        ]
+
     @pytest.mark.parametrize("extracted_price", BAD_EXTRACTED_PRICES)
     def test_unusable_extracted_price_skips_only_that_row(
         self, google_search, caplog, extracted_price
@@ -789,6 +806,84 @@ class TestIsRelevant:
         )
         assert _is_relevant(result, "Google Pixel 10 Pro XL", target_price=1000.0) is True
 
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("Apple iPhone 15 Pro 256GB Natural Titanium", True),
+            ("Apple iPhone 15 Pro 256 GB Natural Titanium", True),
+            ("Apple iPhone 15 Pro 128GB Natural Titanium", False),
+            ("Apple iPhone 15 Pro 512GB Natural Titanium", False),
+            ("Apple iPhone 15 Pro Natural Titanium", False),
+        ],
+        ids=["256GB", "256-space-GB", "128GB", "512GB", "no-storage"],
+    )
+    def test_keyword_is_a_required_term(self, title, expected):
+        """Keywords are required terms (#3): "256GB" or "256 GB" is the 256GB model."""
+        result = SearchResult(title=title, price=999.0, currency="USD", source="test")
+        # The name alone matches every one of these titles: the keyword decides.
+        assert _is_relevant(result, "iPhone 15 Pro") is True
+        assert _is_relevant(result, "iPhone 15 Pro", keywords="256GB") is expected
+
+    @pytest.mark.parametrize(
+        ("keywords", "expected"),
+        [
+            ("256GB, unlocked", True),
+            ("unlocked,256GB", True),
+            ("256GB, unlocked, blue titanium", False),
+            ("256GB, verizon", False),
+        ],
+    )
+    def test_every_comma_separated_keyword_term_is_required(self, keywords, expected):
+        result = SearchResult(
+            title="Apple iPhone 15 Pro 256GB Unlocked - Natural Titanium",
+            price=999.0,
+            currency="USD",
+            source="test",
+        )
+        assert _is_relevant(result, "iPhone 15 Pro", keywords=keywords) is expected
+
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("Apple iPhone 15 Pro 256GB - Natural Titanium", True),
+            ("Apple iPhone 15 Pro 256GB - Natural Titanium (Renewed)", False),
+            ("Apple iPhone 15 Pro 256GB Refurbished", False),
+            ("Restored Apple iPhone 15 Pro 256GB", False),
+            ("Apple iPhone 15 Pro 256GB Pre-Owned", False),
+            ("Used Apple iPhone 15 Pro 256GB", False),
+            ("Apple iPhone 15 Pro 256GB - Open Box", False),
+            ("Apple iPhone 15 Pro 256GB For Parts or Not Working", False),
+        ],
+        ids=["new", "renewed", "refurbished", "restored", "pre-owned", "used", "open-box", "parts"],
+    )
+    def test_second_hand_title_is_rejected(self, title, expected):
+        """Renewed, refurbished and other second-hand listings are rejected by default (#3)."""
+        result = SearchResult(title=title, price=700.0, currency="USD", source="test")
+        assert _is_relevant(result, "iPhone 15 Pro") is expected
+
+    @pytest.mark.parametrize(
+        ("condition", "expected"), [(None, True), *((c, False) for c in SECOND_HAND_CONDITIONS)]
+    )
+    def test_second_hand_condition_is_rejected(self, condition, expected):
+        """A Google row's second_hand_condition rejects it, whatever its title says (#3)."""
+        result = SearchResult(
+            title="Folgers Classic Roast Ground Coffee",
+            price=5.88,
+            currency="USD",
+            source="google_shopping",
+            condition=condition,
+        )
+        assert _is_relevant(result, "Folgers Classic Roast Ground Coffee") is expected
+
+    @pytest.mark.parametrize("item_name", ["The", "!!!", "A"])
+    @pytest.mark.parametrize(
+        "title", ["Phone Case", "Sony WH-1000XM5 Wireless Noise Canceling Headphones"]
+    )
+    def test_name_without_a_matchable_token_rejects(self, item_name, title):
+        """Such a name used to accept every listing, accessories included (#3)."""
+        result = SearchResult(title=title, price=50.0, currency="USD", source="test")
+        assert _is_relevant(result, item_name) is False
+
 
 class TestHasAccessoryExtension:
     def test_no_extensions(self):
@@ -950,6 +1045,32 @@ class TestRunPriceCheck:
         assert result.results_count == 1
         assert result.lowest_price == 999.0
 
+    def test_item_keywords_reach_the_relevance_check(self, db_session, send_alert):
+        """The cheaper 128GB listing is not the lowest price of an item with keyword 256GB (#3)."""
+        engine = MagicMock()
+        engine.name = "mock"
+        engine.search.return_value = [
+            SearchResult(
+                title="Apple iPhone 15 Pro 128GB", price=700.0, currency="USD", source="mock"
+            ),
+            SearchResult(
+                title="Apple iPhone 15 Pro 256GB", price=850.0, currency="USD", source="mock"
+            ),
+        ]
+        item = Item(
+            name="iPhone 15 Pro", keywords="256GB", notify_email="n@x.com", target_price=900.0
+        )
+        db_session.add(item)
+        db_session.commit()
+        db_session.refresh(item)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert (result.results_count, result.lowest_price) == (1, 850.0)
+        assert send_alert.call_args.kwargs["result"].title == "Apple iPhone 15 Pro 256GB"
+        assert [r.title for r in db_session.query(PriceRecord)] == ["Apple iPhone 15 Pro 256GB"]
+
     def test_missing_key_is_an_engine_error_for_each_engine(
         self, db_session, send_alert, monkeypatch, caplog
     ):
@@ -1020,6 +1141,23 @@ class TestDocumentedRowsThroughPriceCheck:
     ):
         _serve(engines[1], {**BING_IPHONE_13, "installments": BING_INSTALLMENTS})
         item = _tracked_item(db_session, "iPhone 13 128GB", target)
+
+        result = run_price_check(item=item, db=db_session)
+
+        send_alert.assert_not_called()
+        assert result.lowest_price is None
+        assert db_session.query(PriceRecord).count() == 0
+
+    @pytest.mark.parametrize("condition", SECOND_HAND_CONDITIONS)
+    def test_second_hand_row_is_never_the_alert_price(
+        self, engines, send_alert, db_session, condition
+    ):
+        """The title is the item's name, so only second_hand_condition can drop the row (#3).
+
+        Without it the same row is the alert price: see test_lowest_result_names_merchant_and_link.
+        """
+        _serve(engines[0], {**GOOGLE_FOLGERS, "second_hand_condition": condition})
+        item = _tracked_item(db_session, "Folgers Classic Roast Ground Coffee", 6.0)
 
         result = run_price_check(item=item, db=db_session)
 
