@@ -10,6 +10,7 @@ existing row is kept, including any price record whose item is already gone.
 
 from collections.abc import Sequence
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -34,6 +35,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    with op.batch_alter_table("price_records") as batch_op:
-        batch_op.drop_constraint(FK_NAME, type_="foreignkey")
-        batch_op.create_foreign_key(None, "items", ["item_id"], ["id"])  # the baseline's FK
+    # Back to the baseline's foreign key, which has no name: batch mode cannot add an unnamed
+    # one, so the table is rebuilt with item_id given here in place of the reflected column
+    # and its foreign key.
+    item_id = sa.Column("item_id", sa.Integer(), sa.ForeignKey("items.id"), nullable=False)
+    with op.batch_alter_table("price_records", recreate="always", reflect_args=[item_id]):
+        pass
