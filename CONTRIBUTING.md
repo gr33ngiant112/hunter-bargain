@@ -132,7 +132,8 @@ Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`
 1. Ensure all tests pass: `pytest -v`
 2. Ensure lint is clean: `ruff check . && ruff format --check .`
 3. Update `CHANGELOG.md` with your changes under `[Unreleased]`
-4. Create a PR targeting `develop` (never `main` directly)
+4. Create a PR targeting `develop` (never `main` directly). CI skips draft PRs, so run steps 1
+   and 2 locally before you mark a draft ready for review.
 5. Describe what changed and why, link the issue (`Fixes #N`), and list the commands you ran with
    their results
 6. Request review from a maintainer
