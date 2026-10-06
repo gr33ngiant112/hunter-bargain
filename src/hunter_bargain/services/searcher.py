@@ -213,6 +213,27 @@ _PHRASE_BREAK = re.compile(
 # Breaks after which an accessory names the product it fits: "Screen Protector for Pixel 10 Pro",
 # "Replacement Ear Pads Compatible with Sony WH-1000XM5".
 _FOR_WORDS = frozenset({"for", "compatible", "fits"})
+# A product generation: "2nd Generation", "3rd Gen", "5th-gen", "Gen 2". Names write it as a bare
+# number ("AirPods Pro 2"); _generations writes titles and names that way.
+_GENERATION = re.compile(
+    r"([(\[]\s*)?\b(?:(\d+)(?:st|nd|rd|th)[\s-]*gen(?:eration)?|gen(?:eration)?[\s-]*(\d+))\b",
+    re.IGNORECASE,
+)
+
+
+def _generations(text: str) -> str:
+    """Write each generation as its bare number, ahead of a bracket it opens.
+
+    "AirPods Pro (2nd Generation)" becomes "AirPods Pro 2 ()", so the 2 stays right after "Pro"
+    once bracketed text is left out (_breaks_slot), and "Echo Dot (5th Gen, 2022)" becomes
+    "Echo Dot 5 (, 2022)".
+    """
+
+    def bare(generation: re.Match[str]) -> str:
+        number = generation.group(2) or generation.group(3)
+        return f" {number} {generation.group(1) or ''}"
+
+    return _GENERATION.sub(bare, text)
 
 
 def _tokens(text: str) -> list[str]:
@@ -304,11 +325,11 @@ class _Target:
 
 def _target(item_name: str, keywords: str | None) -> _Target | None:
     """The item's tokens; None if its name has none that can match ("The", "!!!")."""
-    name = _tokens(item_name)
+    name = _tokens(_generations(item_name))
     significant = [token for token in name if _significant(token)]
     if not significant:
         return None
-    phrases = [name, *(_tokens(term) for term in _keyword_terms(keywords))]
+    phrases = [name, *(_tokens(_generations(term)) for term in _keyword_terms(keywords))]
     keyword_tokens = {token for phrase in phrases[1:] for token in phrase if _significant(token)}
     return _Target(
         identifiers=frozenset(token for token in significant if _has_digit(token)),
@@ -439,6 +460,9 @@ def _is_relevant(
       number is ("PlayStation 4" for "PlayStation 5"); or the title has a model code shaped like
       one of the item's but different ("WH-1000XM4" for "WH-1000XM5").
     - It is an accessory for the item (_is_accessory).
+
+    A generation counts as its number in the title and in the name: "AirPods Pro (2nd
+    Generation)" and "AirPods Pro Gen 2" are "AirPods Pro 2" (_generations).
     """
     if target_price and target_price > 0 and result.price < target_price * _PRICE_FLOOR_RATIO:
         return False
@@ -453,18 +477,19 @@ def _is_relevant(
     if target is None:
         return False
 
-    tokens = _tokens(result.title)
+    title = _generations(result.title)
+    tokens = _tokens(title)
     if _has_condition_words(tokens):
         return False
 
     present = set(tokens)
     if not (_shows_name(present, target) and target.keyword_tokens <= present):
         return False
-    if _breaks_slot(_tokens(_BRACKETED.sub(" ", result.title)), target.slots):
+    if _breaks_slot(_tokens(_BRACKETED.sub(" ", title)), target.slots):
         return False
     if _has_other_code(present, target.codes):
         return False
-    return not _is_accessory(result.title, target)
+    return not _is_accessory(title, target)
 
 
 def _filter_relevant(results: list[SearchResult], item: Item) -> list[SearchResult]:

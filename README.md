@@ -179,6 +179,7 @@ curl -X POST http://localhost:8000/api/v1/items/ \
 
 `notify_email` must be one of the `ALERT_RECIPIENTS` addresses; create and update return 422 for any other address.
 `keywords` is optional: comma-separated terms that are added to the search query, and a listing counts only if its title has every word of every term, in any order (here `founders` and `edition`; `"256GB, unlocked"` also matches "256 GB ... Unlocked"). Filler words such as "the", "for" or "with" are not required.
+Name the item the way listings do. A generation can be written either way: `AirPods Pro 2` also matches titles that say "(2nd Generation)", "2nd Gen" or "Gen 2". A title whose main noun is a word such as "earbuds", "keyboard", "lens" or "case" counts as an accessory unless the item's name or keywords have that word, so when the product is itself one of these, put the word in `name`: `AirPods Pro 2 earbuds` keeps "Apple AirPods Pro 2 Wireless Earbuds, ...", which `AirPods Pro 2` rejects.
 `name` and `keywords` must not contain control characters such as line breaks, tabs or ESC; create and update return 422 if they do.
 `name` must not be blank (whitespace only), and an update cannot set `name` or `notify_email` to null; `target_price` must be a finite number above 0 and at most 1,000,000. Create and update return 422 otherwise.
 
