@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   409 while a check of all items, its own or the daily job's, is running.
 - `hb check` without an item ID starts that background check and prints no prices;
   `hb check ITEM_ID` still prints the item's prices
+- `AGENTS.md` is a short, hand-written guide for coding agents: commands, what not to do, and
+  facts the code does not show. Workflow and style rules are in `CONTRIBUTING.md` only.
+
+### Removed
+
+- The first build session's notes: `tasks/` (now ignored by git) and `BLOCKED_FEATURES.md`. The
+  purchase-links spec moved from `FEATURES.md` to `docs/specs/2026-03-03-purchase-links.md`, and
+  the open backlog item is issue #54.
 
 ### Fixed
 
