@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from hunter_bargain import __version__
 from hunter_bargain.api.items import router as items_router
 from hunter_bargain.api.prices import router as prices_router
 from hunter_bargain.config import settings
@@ -44,7 +45,7 @@ app = FastAPI(
     description=(
         "Price tracker and discovery bot — finds the lowest price across multiple search engines."
     ),
-    version="0.1.0",
+    version=__version__,
     lifespan=lifespan,
 )
 
