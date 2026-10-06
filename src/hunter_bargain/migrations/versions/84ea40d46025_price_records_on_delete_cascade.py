@@ -27,8 +27,8 @@ BASELINE_FK_NAMING = {"fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_tabl
 
 
 def upgrade() -> None:
-    # Batch mode copies the table; the app and env.py migrate with foreign key enforcement off,
-    # so a price record whose item is gone is copied too.
+    # Batch mode copies the table. env.py runs every migration with foreign key enforcement
+    # off, so a price record whose item is gone is copied too.
     with op.batch_alter_table("price_records", naming_convention=BASELINE_FK_NAMING) as batch_op:
         batch_op.drop_constraint(FK_NAME, type_="foreignkey")
         batch_op.create_foreign_key(FK_NAME, "items", ["item_id"], ["id"], ondelete="CASCADE")
