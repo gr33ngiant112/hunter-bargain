@@ -76,6 +76,8 @@ class GoogleShoppingEngine(SearchEngine):
 
             raw_ext = item.get("extensions")
             extensions = tuple(raw_ext) if raw_ext else None
+            # Set on a second-hand offer, e.g. "used" or "refurbished": any value counts (#3).
+            condition = str(item.get("second_hand_condition") or "").strip() or None
             results.append(
                 SearchResult(
                     title=title,
@@ -86,6 +88,7 @@ class GoogleShoppingEngine(SearchEngine):
                     url=item.get("product_link"),
                     extensions=extensions,
                     merchant=item.get("source") or None,
+                    condition=condition,
                 )
             )
 

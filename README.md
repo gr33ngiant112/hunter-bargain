@@ -27,7 +27,7 @@ Think of it as a deal-hunting laptop that *actually* does useful work.
 ### Key Features
 
 - **Multi-engine search** — Queries Google Shopping and Bing Shopping simultaneously via [SerpAPI](https://serpapi.com/)
-- **Smart filtering** — Relevance scoring, price floor detection, and accessory filtering so you get actual products, not phone cases
+- **Smart filtering** — Model-number and keyword matching, price floor detection, and accessory and second-hand filtering so you get the actual product, not a phone case, an older model or a refurbished one
 - **Email alerts** — Styled HTML emails with a "Buy Now" button when your target price is hit
 - **Scheduled checks** — Automatic daily price checks via APScheduler (configurable cron)
 - **On-demand checks** — Trigger a price check anytime via API or CLI
@@ -96,7 +96,7 @@ Output:
 | Feature | Description |
 |---------|-------------|
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
-| 🧠 Relevance filtering | Word overlap scoring, accessory term blocklist, price floor detection, Google Shopping extensions metadata |
+| 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
 | 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable) |
 | ⚡ On-demand checks | Check one item or all items instantly |
@@ -178,6 +178,7 @@ curl -X POST http://localhost:8000/api/v1/items/ \
 ```
 
 `notify_email` must be one of the `ALERT_RECIPIENTS` addresses; create and update return 422 for any other address.
+`keywords` is optional: comma-separated terms that are added to the search query, and a listing counts only if its title has every word of every term, in any order (here `founders` and `edition`; `"256GB, unlocked"` also matches "256 GB ... Unlocked"). Filler words such as "the", "for" or "with" are not required.
 `name` and `keywords` must not contain control characters such as line breaks, tabs or ESC; create and update return 422 if they do.
 `name` must not be blank (whitespace only), and an update cannot set `name` or `notify_email` to null; `target_price` must be a finite number above 0 and at most 1,000,000. Create and update return 422 otherwise.
 
@@ -241,7 +242,8 @@ User adds item → Stored in SQLite
     └──────────────────┼──────────────────┘
                        ↓
          Aggregate + Relevance Filter
-         (word overlap, price floor, extensions, accessory blocklist)
+         (model numbers, keywords, word overlap, price floor,
+          extensions, accessories, second-hand listings)
                        ↓
          Persist price records to SQLite
                        ↓

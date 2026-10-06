@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   409 while a check of all items, its own or the daily job's, is running.
 - `hb check` without an item ID starts that background check and prints no prices;
   `hb check ITEM_ID` still prints the item's prices
+- Keywords now filter results as well as refine the search: every word of each comma-separated
+  keyword term must appear in a listing's title (`256GB` also matches "256 GB"). Second-hand
+  listings are skipped: Google Shopping rows with a `second_hand_condition`, and titles saying
+  renewed, refurbished, restored, used, pre-owned, open box or for parts.
 - `AGENTS.md` is a short, hand-written guide for coding agents: commands, what not to do, and
   facts the code does not show. Workflow and style rules are in `CONTRIBUTING.md` only.
 
@@ -36,6 +40,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the API runs, so no item is checked and alerted on twice
 - The CLI prints a clear error and exits 1 when the server does not answer in time or the
   request fails, instead of a traceback
+- Relevance filter: previous-generation, look-alike and refurbished listings no longer alert (an
+  iPhone 13 Pro for an iPhone 15 Pro, a WH-1000XM4 for a WH-1000XM5, a PlayStation 4 for a
+  PlayStation 5), and routers, camera kits, vacuums, tablets, laptops and monitors are no longer
+  rejected for words such as "Band", "Lens", "Filter", "Screen", "Keyboard" or "Stand" in their
+  titles. An item name with no word to match, such as "The", no longer accepts every listing.
 
 ### Upgrading
 
