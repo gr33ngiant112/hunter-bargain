@@ -24,6 +24,17 @@ services:
       retries: 3
       start_period: 10s
 
+  # Development only: a local mail server that keeps every message it receives, so alerts can be
+  # checked without sending real email. `docker compose --profile dev up` starts it next to the
+  # app; plain `docker compose up` does not. .env.example's SMTP values point the app at it.
+  # Read the alerts at http://127.0.0.1:8025.
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    profiles: ["dev"]
+    ports:
+      - "127.0.0.1:8025:8025" # web inbox and API
+      - "127.0.0.1:1025:1025" # SMTP, for the app run on the host (uvicorn)
+
 volumes:
   app-data:
     driver: local
