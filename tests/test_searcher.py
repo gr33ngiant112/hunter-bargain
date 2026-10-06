@@ -884,6 +884,21 @@ class TestIsRelevant:
         result = SearchResult(title=title, price=50.0, currency="USD", source="test")
         assert _is_relevant(result, item_name) is False
 
+    @pytest.mark.parametrize(
+        ("item_name", "title"),
+        [
+            # Titles written for this test. The item's model code and another of the same shape:
+            ("Sony WH-1000XM5", "Sony WH-1000XM4 and WH-1000XM5 Headphones Bundle"),
+            ("Dyson V15 Detect", "Dyson V11 and V15 Detect Cordless Vacuum Bundle"),
+            # The item's number, but not after the word it follows in the item's name:
+            ("PlayStation 5", "PlayStation 4 Slim 1TB Console with 5 Games"),
+        ],
+    )
+    def test_title_naming_another_model_is_rejected(self, item_name, title):
+        """Another model's identifier rejects a title that also has the item's own (#3 step 2)."""
+        result = SearchResult(title=title, price=300.0, currency="USD", source="test")
+        assert _is_relevant(result, item_name) is False
+
 
 class TestHasAccessoryExtension:
     def test_no_extensions(self):
