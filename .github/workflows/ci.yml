@@ -11,9 +11,10 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that PR's older run. Each push to develop gets a group of
+# its own (its commit), so a develop run is never cancelled or dropped while it waits.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # A new push to a pull request cancels its older run; a push to develop waits for the running one.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
