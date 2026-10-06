@@ -1,20 +1,26 @@
 name: CI
 
 on:
+  # Draft PRs skip every job (the `if` on each); marking a PR ready for review runs CI. A push
+  # has no pull_request, and null == false is true in Actions expressions, so pushes run every job.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [develop]
 
 permissions:
   contents: read
 
+# A new push to a pull request cancels that PR's older run. Each push to develop gets a group of
+# its own (its commit), so a develop run is never cancelled or dropped while it waits.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     name: test
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,6 +44,7 @@ jobs:
 
   secret-scan:
     name: secret-scan
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -61,6 +68,7 @@ jobs:
 
   dependency-scan:
     name: dependency-scan
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
