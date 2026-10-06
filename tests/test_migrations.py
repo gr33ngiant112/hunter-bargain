@@ -76,9 +76,17 @@ def _version(path: Path) -> list[tuple[object, ...]]:
     return _query(path, "SELECT version_num FROM alembic_version")
 
 
-def _rows(path: Path) -> dict[str, list[tuple[object, ...]]]:
+# Each table's columns before migrations (the fixture's); later revisions add others.
+LEGACY_COLUMNS = {
+    "items": "id, name, keywords, target_price, notify_email, created_at, updated_at",
+    "price_records": "id, item_id, price, currency, source, url, title, checked_at",
+}
+
+
+def _rows(path: Path, columns: dict[str, str] | None = None) -> dict[str, list[tuple[object, ...]]]:
+    """Every row of items and price_records: all columns, or the columns `columns` names."""
     return {
-        table: _query(path, f"SELECT * FROM {table} ORDER BY id")
+        table: _query(path, f"SELECT {(columns or {}).get(table, '*')} FROM {table} ORDER BY id")
         for table in ("items", "price_records")
     }
 
@@ -151,7 +159,13 @@ def test_app_start_upgrades_a_database_from_before_migrations_and_keeps_every_ro
 
     assert result.returncode == 0, result.stderr
     assert _version(db_file) == [(_head(),)]
-    assert _rows(db_file) == rows_before  # price record 4, whose item is gone, included
+    # Price record 4, whose item is gone, included.
+    assert _rows(db_file, LEGACY_COLUMNS) == rows_before
+    # Revision 08579e2a6e54 adds each item's alert state (#9), empty for the existing items.
+    assert _query(db_file, "SELECT last_alert_price, last_alerted_at FROM items") == [
+        (None, None),
+        (None, None),
+    ]
     assert _schema(db_file)["price_records"]["foreign_keys"] == CASCADING_FK
     assert _query(db_file, "PRAGMA journal_mode") == [("wal",)]  # set by the app's engine
     # Migrating leaves the app's logging alone: its next startup message is still logged.

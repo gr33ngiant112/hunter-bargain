@@ -51,6 +51,10 @@ def update_item(item_id: int, payload: ItemUpdate, db: DbSession) -> Item:
         raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+    # A new target starts the alerts over: the next price that meets it is emailed (#9).
+    if "target_price" in update_data and update_data["target_price"] != item.target_price:
+        item.last_alert_price = None
+        item.last_alerted_at = None
     for field, value in update_data.items():
         setattr(item, field, value)
 
