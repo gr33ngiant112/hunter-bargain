@@ -110,7 +110,7 @@ Output:
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
 | 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
 | 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback |
-| ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable) |
+| ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
 | 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check` — full CRUD from your terminal |
 | 🌐 REST API | FastAPI with Pydantic validation, auto-generated OpenAPI docs |

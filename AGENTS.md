@@ -12,7 +12,7 @@ FastAPI + SQLite price tracker: SerpAPI (Google and Bing Shopping) searches, a d
 ## Do not
 
 - Do not read, print or edit `.env` or the real settings file outside the checkout (`~/.config/hunter-bargain/`). `.claude/settings.json` denies both to Claude Code.
-- Do not run `docker compose`, `uvicorn`, `hb check` or `curl` without asking first: they can start or call the app with real settings. `.claude/settings.json` makes Claude Code ask.
+- Do not run `docker compose`, `uvicorn`, `hb check` or `curl` without asking first: they can start or call the app with real settings, and a start can run a missed daily check of all items a minute later. `.claude/settings.json` makes Claude Code ask.
 - Do not call SerpAPI or send real email to check a change. Use tests with fakes and recorded, key-scrubbed fixtures; these are not "dummy data".
 - Do not add a dependency by guessing its name. Once `uv.lock` exists, use `uv add`.
 - Do not refactor code unrelated to the task.
