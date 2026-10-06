@@ -51,10 +51,12 @@ def test_scheduled_check_logs_item_names_with_repr(db_session, caplog):
 
 
 @pytest.fixture
-def daily_trigger(monkeypatch):
+def daily_trigger(monkeypatch, db_session):
     """Return a function that runs start_scheduler and returns the daily job's trigger."""
     fresh = BackgroundScheduler()
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
+    # start_scheduler reads the check_runs records: an empty test database, so no catch-up.
+    monkeypatch.setattr(scheduler_module, "SessionLocal", _sessions(db_session))
 
     def start():
         start_scheduler()
