@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pre-commit hooks (`.pre-commit-config.yaml`): Ruff lint and format, mypy on `src`, a YAML check
+  and a private-key check before each commit; `pre-commit install` once per clone
 - `hb --timeout SECONDS`: how long the CLI waits for the server (default 60; it was a fixed 30,
   less than a slow check of both engines can take)
 

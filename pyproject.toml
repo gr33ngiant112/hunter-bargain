@@ -37,6 +37,8 @@ dev = [
     "httpx",
     "ruff>=0.8.0",
     "respx>=0.21.0",
+    "mypy>=2.4",
+    "pre-commit>=4.6",
 ]
 
 [tool.hatch.version]
@@ -49,6 +51,15 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+
+[[tool.mypy.overrides]]
+# These libraries ship no type information.
+module = ["serpapi", "apscheduler.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

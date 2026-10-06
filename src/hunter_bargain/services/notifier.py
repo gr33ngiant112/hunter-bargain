@@ -153,6 +153,7 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
         # starttls() skips verification.
         context = ssl.create_default_context()
         implicit_tls = settings.smtp_port == 465  # SMTPS: TLS from the first byte
+        connection: smtplib.SMTP  # SMTP_SSL is a subclass
         if implicit_tls:
             connection = smtplib.SMTP_SSL(
                 settings.smtp_host,
