@@ -229,8 +229,8 @@ def test_second_start_runs_no_migration_and_changes_nothing(tmp_path, caplog, be
 def test_deleting_an_item_in_sql_deletes_its_price_records(tmp_path):
     """#10: the database itself removes an item's price records, here in an upgraded one."""
     db_file = _legacy_database(tmp_path / "hb.db")
-    _start(db_file)
     engine = _engine(db_file)
+    db.init_db(engine)  # as at startup: the same engine's connections then serve the app
 
     with engine.begin() as connection:
         connection.execute(text("DELETE FROM items WHERE id = 1"))
@@ -241,9 +241,8 @@ def test_deleting_an_item_in_sql_deletes_its_price_records(tmp_path):
 
 def test_price_record_for_a_missing_item_is_refused(tmp_path):
     db_file = tmp_path / "hb.db"
-    _start(db_file)
     engine = _engine(db_file)
-
+    db.init_db(engine)  # as at startup: the same engine's connections then serve the app
     insert = text(
         "INSERT INTO price_records (item_id, price, currency, source, checked_at)"
         " VALUES (99, 1.0, 'USD', 'google_shopping', '2026-10-01 09:00:00.000000')"
