@@ -23,6 +23,7 @@ FastAPI + SQLite price tracker: SerpAPI (Google and Bing Shopping) searches, a d
 - `config.settings` reads `.env` when the module is imported, so importing the package, including under pytest, loads whatever `.env` is in the working directory.
 - A SerpAPI request URL carries the API key, and so can exception text that quotes it. Log the error type, never the URL or the exception text (see `fetch_serpapi` in `services/engines/base.py`).
 - The daily job and the run lock for checks of all items live in the app process: run one uvicorn process, not `--workers`.
+- The app migrates its database at startup (`db.init_db`), so a model change needs an Alembic migration; see "Schema Changes" in CONTRIBUTING.md.
 - The API has no authentication. Docker Compose publishes it on 127.0.0.1 unless `HB_BIND_ADDR` says otherwise.
 
 Workflow, branching, commits and style for everyone: CONTRIBUTING.md.
