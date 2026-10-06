@@ -46,12 +46,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PlayStation 5), and routers, camera kits, vacuums, tablets, laptops and monitors are no longer
   rejected for words such as "Band", "Lens", "Filter", "Screen", "Keyboard" or "Stand" in their
   titles. An item name with no word to match, such as "The", no longer accepts every listing.
+- Relevance filter: a product generation counts as its number, so an item named "AirPods Pro 2"
+  matches titles that say "(2nd Generation)", "2nd Gen" or "Gen 2", and other generations are
+  still rejected
 
 ### Upgrading
 
 - Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
   for all items, must change: check-all now answers `{"status": "started"}`. Use
   `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
+- Keywords are now required words in a listing's title. An item whose keywords were search hints
+  that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
+  stop matching: change them with `hb update ITEM_ID --keywords "..."` or
+  `PATCH /api/v1/items/{id}`.
 
 ## [0.4.0] - 2026-10-05
 
