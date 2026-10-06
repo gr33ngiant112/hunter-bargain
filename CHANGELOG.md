@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword term must appear in a listing's title (`256GB` also matches "256 GB"). Second-hand
   listings are skipped: Google Shopping rows with a `second_hand_condition`, and titles saying
   renewed, refurbished, restored, used, pre-owned, open box or for parts.
+- `AGENTS.md` is a short, hand-written guide for coding agents: commands, what not to do, and
+  facts the code does not show. Workflow and style rules are in `CONTRIBUTING.md` only.
+
+### Removed
+
+- The first build session's notes: `tasks/` (now ignored by git) and `BLOCKED_FEATURES.md`. The
+  purchase-links spec moved from `FEATURES.md` to `docs/specs/2026-03-03-purchase-links.md`, and
+  the open backlog item is issue #54.
 
 ### Fixed
 

@@ -1,5 +1,7 @@
 # Purchase Links in Alerts and CLI
 
+Status: done. Shipped in 0.3.0 (commit 85d9ee1, 2026-03-03); this was the spec, formerly `FEATURES.md`.
+
 ## Description
 When an alert fires, the email should include a prominent styled "Buy Now" call-to-action button instead of only a plain hyperlink in the HTML body. The existing plain text fallback in the email should keep the raw URL for mail clients that do not render HTML. The CLI `hb check` command should also print the best-result URL so users can copy or click it from terminal output.
 
