@@ -53,6 +53,9 @@ class SearchResult:
             for distinguishing product categories from accessories.
         merchant: Seller named by the listing (Google Shopping ``source``,
             Bing ``seller``).  Third-party text: escape it wherever it is shown.
+        condition: Condition of a second-hand offer (Google Shopping
+            ``second_hand_condition``, e.g. "used" or "refurbished"); None when the
+            row gives none.  Bing rows have no condition field.
     """
 
     title: str
@@ -62,6 +65,7 @@ class SearchResult:
     url: str | None = None
     extensions: tuple[str, ...] | None = None
     merchant: str | None = None
+    condition: str | None = None
 
 
 def is_usd_price(price: object) -> bool:
