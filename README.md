@@ -122,7 +122,7 @@ hb update 1 -t 849.99
 # Run a price check (single item)
 hb check 1
 
-# Run a price check (all items)
+# Start a price check of all items in the background (alerts are emailed; no prices printed)
 hb check
 
 # Remove an item (with confirmation)
@@ -136,6 +136,9 @@ hb --url http://myserver:9000 ls
 
 # Or set via environment variable
 export HUNTER_BARGAIN_URL=http://myserver:9000
+
+# Wait longer for the server (default 60 seconds)
+hb --timeout 120 check 1
 ```
 
 ## API Reference
@@ -159,7 +162,7 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/prices/check/{id}` | Check prices for one item |
-| `POST` | `/prices/check-all` | Check prices for all items |
+| `POST` | `/prices/check-all` | Start a price check of all items in the background: 202 at once, or 409 while a check of all items (this endpoint's or the daily job's) is running. Results go to the price history, the log and alert emails |
 
 ### Example: Create an item
 

@@ -1,6 +1,7 @@
 """Tests for the scheduled price check job."""
 
 import logging
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -245,3 +246,51 @@ def test_failed_check_leaves_none_of_its_writes_behind(db_session, three_items):
     db_session.expire_all()
     saved = sorted(record.item_id for record in db_session.query(PriceRecord))
     assert saved == [first, third]
+
+
+def test_daily_job_is_skipped_while_a_check_of_all_items_runs(db_session, three_items, caplog):
+    """#6: when the cron trigger fires during a check-all run, no item is checked twice."""
+    first, second, third = three_items
+    checked: list[int] = []
+    started, finish = threading.Event(), threading.Event()
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        if item.id == first:
+            started.set()
+            finish.wait(timeout=5)
+        return _empty_result(item)
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+        caplog.at_level(logging.WARNING, logger="hunter_bargain.services.scheduler"),
+    ):
+        assert scheduler_module.start_check_all() is True
+        try:
+            if not started.wait(timeout=5):
+                pytest.fail("setup: the check of all items never started")
+            _scheduled_price_check()  # the daily trigger fires during the run
+        finally:
+            finish.set()
+            if not scheduler_module._run_lock.acquire(timeout=5):
+                pytest.fail("the check of all items did not end within 5 s")
+            scheduler_module._run_lock.release()
+
+    assert checked == [first, second, third]
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "Scheduled price check skipped: a price check of all items is already running."
+    ]
+
+
+def test_daily_job_frees_the_run_lock_when_it_fails():
+    """#6: the job's error still reaches APScheduler's log, and the next run is not blocked."""
+    broken = patch(
+        "hunter_bargain.services.scheduler.SessionLocal",
+        side_effect=OperationalError("SELECT items.id", {}, Exception("unable to open database")),
+    )
+    with broken, pytest.raises(OperationalError):
+        _scheduled_price_check()
+
+    assert scheduler_module._run_lock.acquire(blocking=False)
+    scheduler_module._run_lock.release()
