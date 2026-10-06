@@ -899,6 +899,29 @@ class TestIsRelevant:
         result = SearchResult(title=title, price=300.0, currency="USD", source="test")
         assert _is_relevant(result, item_name) is False
 
+    @pytest.mark.parametrize(
+        "title",
+        [
+            # Titles written for this test: one screen size, three ways to write the inches.
+            'Samsung 27" Odyssey G5 Gaming Monitor',
+            "Samsung 27-Inch Odyssey G5 Gaming Monitor",
+            "Samsung 27 in. Odyssey G5 Gaming Monitor",
+        ],
+        ids=["inch-mark", "hyphen-inch", "in"],
+    )
+    def test_screen_size_matches_however_the_title_writes_inches(self, title):
+        """The name's "27 inch" is a required token, and '27"' in a title is the same size."""
+        result = SearchResult(title=title, price=250.0, currency="USD", source="test")
+        assert _is_relevant(result, "Samsung Odyssey G5 27 inch") is True
+
+    def test_bracketed_text_between_a_word_and_its_number_is_skipped(self):
+        """'(Slim)' between "PlayStation" and "5" does not move the 5 (a title written for this
+        test); the bracket is left out of the check that the 5 follows "PlayStation"."""
+        result = SearchResult(
+            title="Sony PlayStation (Slim) 5 Console", price=450.0, currency="USD", source="test"
+        )
+        assert _is_relevant(result, "PlayStation 5") is True
+
 
 class TestHasAccessoryExtension:
     def test_no_extensions(self):
