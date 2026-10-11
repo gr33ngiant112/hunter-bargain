@@ -1,6 +1,10 @@
 # The local gate for every commit, whichever editor or agent makes it. Once per clone:
 #   uv sync --locked --extra dev && source .venv/bin/activate && pre-commit install
 # Hook revisions are frozen to commit SHAs; `pre-commit autoupdate --freeze` moves them.
+# `pre-commit install` installs both git hooks below; the file checks run before each commit,
+# and the commit-message check runs on each message.
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: f12be1ebaa5351c1fc76472de98db2c3446c8253  # frozen: v0.16.10
@@ -21,3 +25,12 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      # CONTRIBUTING.md "Commit Messages": a type from its list, an optional (scope) and `!`, then
+      # ": " and the summary. Merge, revert, fixup! and squash! messages from git itself pass.
+      # CI runs this hook on every commit a pull request adds.
+      - id: commit-message
+        name: commit message
+        language: pygrep
+        entry: '\A(?:(?:feat|fix|refactor|docs|test|chore|ci)(?:\([\w./-]+\))?!?: \S|Merge |Revert "|(?:fixup|squash|amend)! )'
+        args: [--multiline, --negate]
+        stages: [commit-msg]
