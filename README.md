@@ -111,7 +111,7 @@ Output:
 |---------|-------------|
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
 | 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
-| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback |
+| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
 | 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check` — full CRUD from your terminal |
@@ -281,6 +281,8 @@ All configuration is via environment variables (`.env` file, or the file `HB_ENV
 | `SMTP_PASSWORD` | — | SMTP login password |
 | `EMAIL_FROM` | `SMTP_USER` | From address for alerts |
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
+| `ALERT_MIN_DROP_PCT` | `0` | How far below an item's last alert price, in percent, a new low must be to send another alert; `0` alerts on any lower price. At least 0 and less than 100 |
+| `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ` |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
 | `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
