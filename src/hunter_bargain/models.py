@@ -69,3 +69,23 @@ class PriceRecord(Base):
 
     def __repr__(self) -> str:
         return f"<PriceRecord item_id={self.item_id} price={self.price} source={self.source!r}>"
+
+
+class CheckRun(Base):
+    """One price check of all items, by the daily job or POST /prices/check-all.
+
+    The scheduler reads the last successful run at startup to catch up a missed daily check
+    (services/scheduler.py).
+    """
+
+    __tablename__ = "check_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "running" until the run ends, then "succeeded" or "failed". A run the app did not live to
+    # finish stays "running".
+    status: Mapped[str] = mapped_column(String(20), default="running")
+
+    def __repr__(self) -> str:
+        return f"<CheckRun id={self.id} status={self.status!r} started_at={self.started_at}>"
