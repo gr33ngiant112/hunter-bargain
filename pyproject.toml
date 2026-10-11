@@ -30,6 +30,7 @@ hb = "hunter_bargain.cli:cli"
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
+    "httpx2>=2.0.0",  # the HTTP client Starlette's TestClient is built on; not imported directly
     "ruff>=0.8.0",
     "mypy>=2.4",
     "pre-commit>=4.6",
