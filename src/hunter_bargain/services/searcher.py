@@ -11,6 +11,7 @@ import itertools
 import logging
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
@@ -546,7 +547,10 @@ def _alert_due(item: Item, price: float, now: dt.datetime) -> bool:
     if item.last_alert_price is None or item.last_alerted_at is None:
         return True
     last_price = item.last_alert_price
-    if price < last_price and price <= last_price * (1 - settings.alert_min_drop_pct / 100):
+    # In decimal, from each float's shortest form, so that a drop of exactly ALERT_MIN_DROP_PCT
+    # counts: in binary floating point, 1.00 * (1 - 7 / 100) is 0.9299999999999999, below 0.93.
+    min_drop = Decimal(str(settings.alert_min_drop_pct)) / 100
+    if price < last_price and Decimal(str(price)) <= Decimal(str(last_price)) * (1 - min_drop):
         return True
     last_alerted_at = item.last_alerted_at
     if last_alerted_at.tzinfo is None:  # SQLite returns it without a zone; it is stored in UTC
