@@ -52,9 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dependencies are locked in `uv.lock`. CI installs from it with `uv sync --locked` and fails
   when it is out of date with `pyproject.toml`; a development setup is now
   `uv sync --locked --extra dev`.
-- Higher minimum versions: FastAPI 0.132 (it checks the Content-Type of JSON requests), Pydantic
-  2.7 and APScheduler 3.11 (3.10 fails to import with current setuptools). A CI job runs the
-  tests on the lowest versions `pyproject.toml` allows.
+- Higher minimum versions: FastAPI 0.133 (it checks the Content-Type of JSON requests and, unlike
+  0.132, allows Starlette 1.x), Pydantic 2.7 and APScheduler 3.11 (3.10 fails to import with
+  current setuptools). A CI job runs the tests on the lowest versions `pyproject.toml` allows.
 - The dependency scan (osv-scanner) reads `uv.lock` and fails CI on a known vulnerability; it
   was report-only
 - The tests build Starlette's TestClient on httpx2, a new dev dependency, so they run without a
