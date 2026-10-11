@@ -32,6 +32,7 @@ Be respectful, constructive, and kind. That's it. No 47-page document needed.
 ### Prerequisites
 
 - Python 3.12+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Docker & Docker Compose (for containerized runs)
 - No API key for development: the tests use fakes and recorded SerpAPI responses. A
   [SerpAPI](https://serpapi.com/) key is needed only to run real searches.
@@ -39,10 +40,15 @@ Be respectful, constructive, and kind. That's it. No 47-page document needed.
 ### Install
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install -e ".[dev]"
+uv sync --locked --extra dev   # .venv with the versions in uv.lock, dev tools included
+source .venv/bin/activate      # or .venv\Scripts\activate on Windows
 ```
+
+`uv.lock` pins every dependency, and CI installs from it. Change dependencies with `uv add` or
+`uv remove` (or edit `pyproject.toml` and run `uv lock`), upgrade one with
+`uv lock --upgrade-package NAME`, and commit `uv.lock` with `pyproject.toml`: CI fails when the
+lock is out of date. Another CI job runs the tests on the lowest versions `pyproject.toml`
+allows, so raise a floor when the code needs a newer version.
 
 ### Configure
 

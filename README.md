@@ -43,6 +43,7 @@ Think of it as a deal-hunting laptop that *actually* does useful work.
 - [Docker](https://docs.docker.com/get-docker/) & Docker Compose
 - A free [SerpAPI key](https://serpapi.com/) for search engine access
 - SMTP credentials for email alerts (e.g., [Gmail App Password](https://support.google.com/accounts/answer/185833))
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the `hb` CLI
 
 ### 1. Clone & configure
 
@@ -87,8 +88,9 @@ The API is live at **http://localhost:8000**. Interactive docs at **http://local
 ### 3. Track your first item
 
 ```bash
-# Install the CLI
-pip install -e .
+# Install the CLI, with the versions in uv.lock, into .venv
+uv sync --locked
+source .venv/bin/activate
 
 # Add an item
 hb add "PlayStation 5" -e you@gmail.com -t 399.99 -k "disc edition"
@@ -317,9 +319,8 @@ docker compose up --build -d
 ### Local Development
 
 ```bash
-python -m venv .venv
+uv sync --locked --extra dev   # .venv with the versions in uv.lock, dev tools included
 source .venv/bin/activate
-pip install -e ".[dev]"
 uvicorn hunter_bargain.main:app --reload
 ```
 
@@ -355,7 +356,7 @@ ruff format .     # Format
 
 | Command | Description |
 |---------|-------------|
-| `pip install -e ".[dev]"` | Install with dev dependencies |
+| `uv sync --locked --extra dev` | Install the locked dependencies, dev tools included, into `.venv` |
 | `docker compose up --build` | Run with Docker |
 | `docker compose --profile dev up --build` | Run with Docker and Mailpit, which keeps alerts instead of sending them |
 | `pytest -v` | Run test suite (59 tests) |
