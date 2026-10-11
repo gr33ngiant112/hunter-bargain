@@ -31,8 +31,9 @@ jobs:
         with:
           python-version: "3.12"
           activate-environment: true
+      # The versions in uv.lock. --locked fails the job if uv.lock is out of date with pyproject.toml.
       - name: Install
-        run: uv pip install -e ".[dev]"
+        run: uv sync --locked --extra dev
       - name: Lint
         run: |
           ruff check .
@@ -48,6 +49,27 @@ jobs:
           alembic check
       - name: Build
         run: uv build
+
+  # The lowest versions pyproject.toml allows for each direct dependency, not uv.lock, so the
+  # declared floors stay installable and tested.
+  test-lowest-direct:
+    name: test-lowest-direct
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          activate-environment: true
+          cache-suffix: lowest-direct
+      - name: Install the lowest direct versions
+        run: uv pip install --resolution lowest-direct -e ".[dev]"
+      - name: Test
+        run: pytest -q
 
   secret-scan:
     name: secret-scan
@@ -82,14 +104,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-      # No lockfile yet (#7): scan what pyproject.toml resolves to today.
-      - name: Resolve dependencies
-        run: uv pip compile pyproject.toml --all-extras --python-version 3.12 -o requirements-ci.txt
-      # Report-only until the lockfile work in #7 lands; then scan uv.lock and drop continue-on-error.
-      - name: Scan with osv-scanner (report-only)
-        continue-on-error: true
+      # Every locked version, dev tools included; a known vulnerability fails the job.
+      - name: Scan uv.lock with osv-scanner
         uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
         with:
           scan-args: |-
-            --lockfile=requirements.txt:requirements-ci.txt
+            --lockfile=uv.lock
