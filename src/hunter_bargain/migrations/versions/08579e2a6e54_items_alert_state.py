@@ -1,7 +1,7 @@
 """items: alert state
 
 Revision ID: 08579e2a6e54
-Revises: 84ea40d46025
+Revises: 28b6eb9e8cca
 Create Date: 2026-10-06 14:03:22.499841
 
 The price and time of each item's last alert email, so that a price that stays on target is
@@ -15,7 +15,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "08579e2a6e54"
-down_revision: str | Sequence[str] | None = "84ea40d46025"
+down_revision: str | Sequence[str] | None = "28b6eb9e8cca"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
