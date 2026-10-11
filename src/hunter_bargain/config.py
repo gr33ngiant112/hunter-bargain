@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import EmailStr, SecretStr, field_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     # Comma-separated in the environment: ALERT_RECIPIENTS=me@example.com,you@example.com
     # An invalid address fails validation, so the app does not start.
     alert_recipients: Annotated[list[EmailStr], NoDecode] = []
+
+    # After an alert for an item, the next one needs a price at least alert_min_drop_pct percent
+    # below the last alert's price (0: any lower price), or alert_cooldown_days since that alert
+    # with the price still on target. Out-of-range values fail validation.
+    alert_cooldown_days: float = Field(default=7.0, ge=0, allow_inf_nan=False)
+    alert_min_drop_pct: float = Field(default=0.0, ge=0, lt=100, allow_inf_nan=False)
 
     # SerpAPI
     serpapi_key: SecretStr = SecretStr("")

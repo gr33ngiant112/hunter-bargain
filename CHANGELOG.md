@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and asks before running `docker compose`, `uvicorn`, `hb check` or `curl`
 - A `check_runs` table: each check of all items, by the daily job or
   `POST /api/v1/prices/check-all`, records when it started and finished and whether it succeeded
+- `ALERT_MIN_DROP_PCT` (default 0) and `ALERT_COOLDOWN_DAYS` (default 7): how far below an item's
+  last alert a new low must be, and how many days pass before a price still on target is emailed
+  again
+- `alert_sent` in the result of `POST /api/v1/prices/check/{item_id}`: whether the check emailed
+  an alert
 
 ### Changed
 
@@ -72,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next starts, with a warning in the log naming the missed time. A daily run that starts late
   because the host was suspended or busy still runs within 3 hours; it was skipped once it was
   more than 1 second late.
+- A price that stays at or below an item's target is emailed once, not at every check: the next
+  alert needs a lower price, or 7 days (`ALERT_COOLDOWN_DAYS`). A failed send is tried again at
+  the next check, and a new `target_price` starts the item's alerts over.
 
 ### Upgrading
 
@@ -99,6 +107,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The first start of this version adds the `check_runs` table; existing rows are not changed. A
   missed daily check is caught up only once a check of all items has succeeded on this version:
   the first start after the upgrade has no run to compare with, so it starts no extra check.
+- The first start of this version adds each item's alert state (`last_alert_price`,
+  `last_alerted_at`) to the `items` table. Existing items start without one, so an item whose
+  price is already on target is emailed once more at its next check.
 
 ## [0.4.0] - 2026-10-05
 
