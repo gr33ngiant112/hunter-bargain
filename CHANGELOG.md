@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in a local inbox at http://127.0.0.1:8025 instead of sending them
 - `.claude/settings.json`: Claude Code may not read or edit `.env` or `~/.config/hunter-bargain/`,
   and asks before running `docker compose`, `uvicorn`, `hb check` or `curl`
+- A `check_runs` table: each check of all items, by the daily job or
+  `POST /api/v1/prices/check-all`, records when it started and finished and whether it succeeded
 - `ALERT_MIN_DROP_PCT` (default 0) and `ALERT_COOLDOWN_DAYS` (default 7): how far below an item's
   last alert a new low must be, and how many days pass before a price still on target is emailed
   again
@@ -71,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Relevance filter: a product generation counts as its number, so an item named "AirPods Pro 2"
   matches titles that say "(2nd Generation)", "2nd Gen" or "Gen 2", and other generations are
   still rejected
+- A daily check missed while the app was down, or one that failed, runs a minute after the app
+  next starts, with a warning in the log naming the missed time. A daily run that starts late
+  because the host was suspended or busy still runs within 3 hours; it was skipped once it was
+  more than 1 second late.
 - A price that stays at or below an item's target is emailed once, not at every check: the next
   alert needs a lower price, or 7 days (`ALERT_COOLDOWN_DAYS`). A failed send is tried again at
   the next check, and a new `target_price` starts the item's alerts over.
@@ -98,6 +104,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
   stop matching: change them with `hb update ITEM_ID --keywords "..."` or
   `PATCH /api/v1/items/{id}`.
+- The first start of this version adds the `check_runs` table; existing rows are not changed. A
+  missed daily check is caught up only once a check of all items has succeeded on this version:
+  the first start after the upgrade has no run to compare with, so it starts no extra check.
 - The first start of this version adds each item's alert state (`last_alert_price`,
   `last_alerted_at`) to the `items` table. Existing items start without one, so an item whose
   price is already on target is emailed once more at its next check.
