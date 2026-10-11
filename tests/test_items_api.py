@@ -1,8 +1,11 @@
 """Tests for item CRUD API endpoints."""
 
+import datetime as dt
+
 import pytest
 
 from hunter_bargain.config import settings
+from hunter_bargain.models import Item
 
 # Control characters (Unicode category Cc): LF, CR, tab, NUL, ESC, DEL and the C1 CSI.
 CONTROL_CHARACTERS = ["\n", "\r", "\t", "\x00", "\x1b", "\x7f", "\x9b"]
@@ -316,3 +319,43 @@ def test_name_with_surrounding_spaces_is_kept_as_given(client):
 
     assert resp.status_code == 201
     assert resp.json()["name"] == "  Widget Pro "
+
+
+def _with_alert_state(db_session, item_id: int) -> None:
+    """Give the item an alert state, as after an alert email for $45 (#9)."""
+    item = db_session.get(Item, item_id)
+    item.last_alert_price = 45.0
+    item.last_alerted_at = dt.datetime(2026, 10, 6, 9, 0, tzinfo=dt.UTC)
+    db_session.commit()
+
+
+def _alert_state(db_session, item_id: int) -> tuple[float | None, bool]:
+    """The stored last alert price, and whether a last alert time is stored."""
+    db_session.expire_all()
+    item = db_session.get(Item, item_id)
+    return item.last_alert_price, item.last_alerted_at is not None
+
+
+@pytest.mark.parametrize("target", [40.0, None])
+def test_update_item_new_target_price_clears_the_alert_state(client, db_session, target):
+    """After a new target (or none), the next price that meets the target is emailed (#9)."""
+    item_id = _create_widget(client)  # target_price 50.0
+    _with_alert_state(db_session, item_id)
+
+    resp = client.patch(f"/api/v1/items/{item_id}", json={"target_price": target})
+
+    assert resp.status_code == 200
+    assert _alert_state(db_session, item_id) == (None, False)
+
+
+@pytest.mark.parametrize(
+    "payload", [{"target_price": 50.0}, {"name": "Widget Pro"}, {"keywords": "blue"}]
+)
+def test_update_item_keeps_the_alert_state_unless_the_target_changes(client, db_session, payload):
+    item_id = _create_widget(client)
+    _with_alert_state(db_session, item_id)
+
+    resp = client.patch(f"/api/v1/items/{item_id}", json=payload)
+
+    assert resp.status_code == 200
+    assert _alert_state(db_session, item_id) == (45.0, True)

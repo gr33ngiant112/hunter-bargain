@@ -1,5 +1,6 @@
 """Tests for the search engine implementations and orchestrator."""
 
+import datetime as dt
 import json
 import logging
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ from requests.adapters import HTTPAdapter
 
 from hunter_bargain.config import settings as app_settings
 from hunter_bargain.models import Item, PriceRecord
+from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services.engines import base, bing, google
 from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.engines.bing import BingShoppingEngine
@@ -1260,3 +1262,125 @@ class TestDocumentedRowsThroughPriceCheck:
         alerted = send_alert.call_args.kwargs["result"]
         assert (alerted.price, alerted.source, alerted.merchant, alerted.url) == expected
         assert {r.source for r in db_session.query(PriceRecord)} == {result.lowest_source}
+
+
+# #9: a price that stays on target is emailed once; after that, a new low or the cooldown.
+
+T0 = dt.datetime(2026, 10, 6, 9, 0, tzinfo=dt.UTC)
+
+
+def _check_at(
+    db_session, monkeypatch, item: Item, price: float, at: dt.datetime
+) -> PriceCheckResult:
+    """Check `item` at time `at`, with one engine that finds it at `price`."""
+    engine = MagicMock()
+    engine.name = "mock"
+    engine.search.return_value = [
+        SearchResult(title=f"{item.name} Bargain", price=price, currency="USD", source="mock")
+    ]
+    monkeypatch.setattr("hunter_bargain.services.searcher._now", lambda: at)
+    with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+        return run_price_check(item=item, db=db_session)
+
+
+def _alert_state(db_session, item: Item) -> tuple[float | None, dt.datetime | None]:
+    """The item's committed alert state: the rollback drops anything left uncommitted. SQLite
+    returns last_alerted_at without a time zone; it is stored in UTC."""
+    db_session.rollback()
+    alerted_at = item.last_alerted_at
+    return item.last_alert_price, alerted_at.replace(tzinfo=dt.UTC) if alerted_at else None
+
+
+class TestAlertDedup:
+    """Alert state on items: one email per deal, then only a new low or after the cooldown."""
+
+    @pytest.fixture(autouse=True)
+    def policy(self, monkeypatch, send_alert):
+        """The default policy (any new low; 7 days), and a send_price_alert that succeeds."""
+        monkeypatch.setattr(app_settings, "alert_min_drop_pct", 0.0)
+        monkeypatch.setattr(app_settings, "alert_cooldown_days", 7.0)
+        send_alert.return_value = True
+
+    def test_repeated_checks_at_an_unchanged_price_send_one_alert(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+
+        sent = [
+            _check_at(db_session, monkeypatch, item, 45.0, T0 + dt.timedelta(days=day)).alert_sent
+            for day in range(3)
+        ]
+
+        assert sent == [True, False, False]
+        assert send_alert.call_count == 1
+        assert _alert_state(db_session, item) == (45.0, T0)
+
+    def test_a_new_low_sends_a_new_alert(self, db_session, monkeypatch, send_alert):
+        """Higher prices, still on target, and a return to the last alert's price send nothing."""
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+        prices = [45.0, 44.99, 46.0, 44.99, 44.0]
+
+        sent = [
+            _check_at(
+                db_session, monkeypatch, item, price, T0 + dt.timedelta(hours=hour)
+            ).alert_sent
+            for hour, price in enumerate(prices)
+        ]
+
+        assert sent == [True, True, False, False, True]
+        assert [c.kwargs["result"].price for c in send_alert.call_args_list] == [45.0, 44.99, 44.0]
+        assert _alert_state(db_session, item) == (44.0, T0 + dt.timedelta(hours=4))
+
+    def test_after_the_cooldown_the_same_price_is_emailed_again(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+        cooldown = dt.timedelta(days=7)
+
+        sent = [
+            _check_at(db_session, monkeypatch, item, 45.0, at).alert_sent
+            for at in (T0, T0 + cooldown - dt.timedelta(seconds=1), T0 + cooldown)
+        ]
+
+        assert sent == [True, False, True]
+        assert send_alert.call_count == 2
+        assert _alert_state(db_session, item) == (45.0, T0 + cooldown)
+
+    def test_a_failed_send_leaves_the_state_alone_and_the_next_check_tries_again(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+        send_alert.return_value = False  # SMTP not configured, refused or failed
+
+        assert _check_at(db_session, monkeypatch, item, 45.0, T0).alert_sent is False
+        assert _alert_state(db_session, item) == (None, None)
+
+        send_alert.return_value = True
+        later = T0 + dt.timedelta(hours=1)
+        assert _check_at(db_session, monkeypatch, item, 45.0, later).alert_sent is True
+        assert send_alert.call_count == 2
+        assert _alert_state(db_session, item) == (45.0, later)
+
+    def test_price_above_target_sends_nothing_and_keeps_no_state(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+
+        assert _check_at(db_session, monkeypatch, item, 55.0, T0).alert_sent is False
+        send_alert.assert_not_called()
+        assert _alert_state(db_session, item) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("price", "alerted"),
+        [(90.01, False), (90.0, True), (80.0, True)],
+        ids=["less-than-10pct-lower", "exactly-10pct-lower", "20pct-lower"],
+    )
+    def test_alert_min_drop_pct_sets_how_much_lower_a_new_low_must_be(
+        self, db_session, monkeypatch, price, alerted
+    ):
+        monkeypatch.setattr(app_settings, "alert_min_drop_pct", 10.0)
+        item = _tracked_item(db_session, "Tracked Widget", target_price=100.0)
+        assert _check_at(db_session, monkeypatch, item, 100.0, T0).alert_sent is True
+
+        later = T0 + dt.timedelta(days=1)
+        assert _check_at(db_session, monkeypatch, item, price, later).alert_sent is alerted

@@ -1,4 +1,5 @@
-"""Tests for the ALERT_RECIPIENTS setting: parsing, startup validation and matching."""
+"""Tests for the settings: ALERT_RECIPIENTS parsing, startup validation and matching, and the
+ranges of the alert policy settings."""
 
 import os
 import subprocess
@@ -70,3 +71,46 @@ def test_env_file_may_hold_docker_compose_variables(tmp_path, monkeypatch):
     settings = Settings(_env_file=env_file)
 
     assert settings.log_level == "debug"
+
+
+def test_alert_policy_defaults(monkeypatch):
+    """Any new low, or 7 days after the last alert (#9)."""
+    monkeypatch.delenv("ALERT_COOLDOWN_DAYS", raising=False)
+    monkeypatch.delenv("ALERT_MIN_DROP_PCT", raising=False)
+    settings = Settings(_env_file=None)
+
+    assert (settings.alert_cooldown_days, settings.alert_min_drop_pct) == (7.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "expected"),
+    [
+        ("ALERT_COOLDOWN_DAYS", "0", 0.0),
+        ("ALERT_COOLDOWN_DAYS", "1.5", 1.5),
+        ("ALERT_MIN_DROP_PCT", "0", 0.0),
+        ("ALERT_MIN_DROP_PCT", "99.5", 99.5),
+    ],
+)
+def test_alert_policy_is_read_from_the_environment(monkeypatch, name, value, expected):
+    monkeypatch.setenv(name, value)
+
+    assert getattr(Settings(_env_file=None), name.lower()) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("ALERT_COOLDOWN_DAYS", "-1"),
+        ("ALERT_COOLDOWN_DAYS", "nan"),
+        ("ALERT_COOLDOWN_DAYS", "inf"),
+        ("ALERT_MIN_DROP_PCT", "-0.5"),
+        ("ALERT_MIN_DROP_PCT", "100"),
+        ("ALERT_MIN_DROP_PCT", "nan"),
+    ],
+)
+def test_out_of_range_alert_policy_fails_validation(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None)
+    assert [error["loc"] for error in excinfo.value.errors()] == [(name.lower(),)]
