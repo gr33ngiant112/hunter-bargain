@@ -1384,3 +1384,20 @@ class TestAlertDedup:
 
         later = T0 + dt.timedelta(days=1)
         assert _check_at(db_session, monkeypatch, item, price, later).alert_sent is alerted
+
+    @pytest.mark.parametrize(
+        ("last", "price", "alerted"),
+        [(1.00, 0.93, True), (1.00, 0.94, False), (1.05, 0.98, False)],
+        ids=["exactly-7pct-lower", "6pct-lower", "6.67pct-lower"],
+    )
+    def test_a_drop_of_exactly_alert_min_drop_pct_is_a_new_low(
+        self, db_session, monkeypatch, last, price, alerted
+    ):
+        """Thresholds that binary floating point cannot hold exactly: 1.00 less 7% is
+        0.9299999999999999 as a float, and 1.05 less 7% (0.9765) rounds up to 0.98 in cents."""
+        monkeypatch.setattr(app_settings, "alert_min_drop_pct", 7.0)
+        item = _tracked_item(db_session, "Tracked Widget", target_price=2.0)
+        assert _check_at(db_session, monkeypatch, item, last, T0).alert_sent is True
+
+        later = T0 + dt.timedelta(days=1)
+        assert _check_at(db_session, monkeypatch, item, price, later).alert_sent is alerted
