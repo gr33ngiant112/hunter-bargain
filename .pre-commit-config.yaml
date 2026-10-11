@@ -1,5 +1,5 @@
 # The local gate for every commit, whichever editor or agent makes it. Once per clone:
-#   pip install -e ".[dev]" && pre-commit install
+#   uv sync --locked --extra dev && source .venv/bin/activate && pre-commit install
 # Hook revisions are frozen to commit SHAs; `pre-commit autoupdate --freeze` moves them.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit

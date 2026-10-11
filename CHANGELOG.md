@@ -49,12 +49,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI skips draft pull requests and runs when a pull request is marked ready for review
 - `.env.example` holds development values: alerts go to Mailpit, and the SerpAPI key and SMTP
   login are empty
+- Dependencies are locked in `uv.lock`. CI installs from it with `uv sync --locked` and fails
+  when it is out of date with `pyproject.toml`; a development setup is now
+  `uv sync --locked --extra dev`.
+- Higher minimum versions: FastAPI 0.133 (it checks the Content-Type of JSON requests and, unlike
+  0.132, allows Starlette 1.x), Pydantic 2.7 and APScheduler 3.11 (3.10 fails to import with
+  current setuptools). A CI job runs the tests on the lowest versions `pyproject.toml` allows.
+- The dependency scan (osv-scanner) reads `uv.lock` and fails CI on a known vulnerability; it
+  was report-only
+- The tests build Starlette's TestClient on httpx2, a new dev dependency, so they run without a
+  deprecation warning
 
 ### Removed
 
 - The first build session's notes: `tasks/` (now ignored by git) and `BLOCKED_FEATURES.md`. The
   purchase-links spec moved from `FEATURES.md` to `docs/specs/2026-03-03-purchase-links.md`, and
   the open backlog item is issue #54.
+- Unused dependencies: beautifulsoup4, lxml and python-dotenv (pydantic-settings still installs
+  python-dotenv), and pytest-asyncio, respx and a second httpx entry in the dev extra
 
 ### Fixed
 
