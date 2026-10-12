@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     # SerpAPI
     serpapi_key: SecretStr = SecretStr("")
 
+    # A push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET after each check of
+    # all items that succeeds, so a daily check that stops succeeding raises an alarm outside the
+    # app. Empty: off. The URL holds the monitor's token, so it is a secret and never logged.
+    heartbeat_url: SecretStr = SecretStr("")
+
     # Application
     log_level: str = "info"
 

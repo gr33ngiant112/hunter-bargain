@@ -9,6 +9,7 @@ import threading
 import time
 from unittest.mock import patch
 
+import httpx
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
 from pydantic import SecretStr
@@ -20,6 +21,7 @@ from test_searcher import SEARCH_ERROR_BODY
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.models import CheckRun, Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
+from hunter_bargain.services import heartbeat
 from hunter_bargain.services import scheduler as scheduler_module
 from hunter_bargain.services.scheduler import _scheduled_price_check, start_scheduler
 
@@ -690,3 +692,90 @@ def test_run_with_one_search_that_worked_still_succeeds(db_session, three_items)
 
     assert [status for status, _, _ in _runs(db_session)] == ["succeeded"]
     assert _counts(db_session) == [(3, 1, 5, 0)]
+
+
+# #24: the heartbeat (HEARTBEAT_URL) goes out after a check of all items that succeeded, and only
+# then. Its requests go to an httpx.MockTransport.
+
+HEARTBEAT_URL = "https://hc-ping.com/fake-heartbeat-token-for-tests"
+
+
+@pytest.fixture
+def heartbeats(monkeypatch) -> list[httpx.Request]:
+    """HEARTBEAT_URL set, and the heartbeat requests the scheduler sends, answered with 200."""
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200)
+
+    send = functools.partial(heartbeat.send_heartbeat, transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(settings, "heartbeat_url", SecretStr(HEARTBEAT_URL))
+    monkeypatch.setattr(scheduler_module, "send_heartbeat", send)
+    return sent
+
+
+def _statuses(db_session) -> list[str]:
+    return [status for status, _, _ in _runs(db_session)]
+
+
+def _check_finds_nothing(item: Item, db: object) -> PriceCheckResult:
+    """A run_price_check whose searches worked and found no price."""
+    return _empty_result(item)
+
+
+@both_entry_points
+def test_heartbeat_is_sent_once_after_a_run_that_succeeded(
+    db_session, three_items, heartbeats, run_all
+):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch(
+            "hunter_bargain.services.scheduler.run_price_check", side_effect=_check_finds_nothing
+        ),
+    ):
+        run_all()
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert _counts(db_session) == [(3, 0, 0, 0)]  # every item's check ran to the end
+    assert [(r.method, str(r.url)) for r in heartbeats] == [("GET", HEARTBEAT_URL)]
+
+
+def test_heartbeat_is_sent_after_a_run_with_no_items(db_session, heartbeats):
+    with patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)):
+        _run_daily_job()
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert len(heartbeats) == 1
+
+
+def test_no_heartbeat_after_a_run_that_an_error_ended(db_session, three_items, heartbeats):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch.object(Session, "scalars", side_effect=LIST_ITEMS_FAILS),
+        pytest.raises(OperationalError),
+    ):
+        _run_daily_job()
+
+    assert _statuses(db_session) == ["failed"]
+    assert heartbeats == []
+
+
+def test_no_heartbeat_after_a_run_whose_every_search_failed(db_session, three_items, heartbeats):
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        return _empty_result(item).model_copy(update={"engine_errors": QUOTA_ERRORS})
+
+    _run_job(db_session, fake_check)
+
+    assert _statuses(db_session) == ["failed"]
+    assert heartbeats == []
+
+
+def test_no_heartbeat_without_heartbeat_url(db_session, three_items, heartbeats, monkeypatch):
+    monkeypatch.setattr(settings, "heartbeat_url", SecretStr(""))
+
+    _run_job(db_session, _check_finds_nothing)
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert _counts(db_session) == [(3, 0, 0, 0)]
+    assert heartbeats == []

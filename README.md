@@ -308,6 +308,7 @@ All configuration is via environment variables (`.env` file, or the file `HB_ENV
 | `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ`. `/health` fails once a check is overdue by its schedule ([Health](#health)) |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
+| `HEARTBEAT_URL` | — | A push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a 10-second timeout, after each price check of all items that succeeds; the monitor raises the alarm when it stops. Empty: off. The URL holds the monitor's token, so it is never logged: a failed ping is a warning with the HTTP status or error type only |
 | `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
 | `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
 | `HB_ENV_FILE` | `.env` | Docker Compose only: the file whose settings the app gets. Point it at a file outside the checkout that holds the real credentials (see [Deployment](#deployment)). Compose reads it from the shell or the checkout's `.env` |
@@ -328,6 +329,9 @@ docker compose up --build -d
   is not running or no price check of all items has succeeded in 26 hours (with the default daily
   schedule; see [Health](#health));
   `hb status` shows the last check. The image's Docker `HEALTHCHECK` reads the same endpoint.
+- Alarms from outside the app: set `HEARTBEAT_URL` to a push monitor's URL (healthchecks.io, Uptime
+  Kuma), and it hears from the app after each successful check of all items, so it notices when
+  they stop
 - SQLite data persisted via Docker volume (`app-data`)
 - The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
   `data-permissions` service gives the `app-data` volume to that user, so a volume from an
