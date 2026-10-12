@@ -32,6 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again
 - `alert_sent` in the result of `POST /api/v1/prices/check/{item_id}`: whether the check emailed
   an alert
+- `SECURITY.md`: report a vulnerability privately, through GitHub's private vulnerability
+  reporting, not in a public issue
 - `.github/dependabot.yml`: weekly Dependabot pull requests for `uv.lock` (the floors in
   `pyproject.toml` stay as set), the GitHub Actions, the Docker base image (without Python
   version changes) and the Mailpit image

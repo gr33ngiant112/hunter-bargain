@@ -202,7 +202,8 @@ revert, `fixup!`, `squash!` and `amend!` messages pass.
 
 ## Reporting Bugs
 
-Open an issue with:
+Report a security problem privately, as [SECURITY.md](SECURITY.md) describes, not in an issue.
+For any other bug, open an issue with:
 
 1. **What happened** (actual behavior)
 2. **What you expected** (expected behavior)
