@@ -31,7 +31,7 @@ jobs:
       CI_NAME: ci-hunter-bargain-${{ github.run_id }}-${{ github.run_attempt }}
       # Compose loads the app's env_file (HB_ENV_FILE, default .env) with the project, and a
       # checkout has no .env: the committed example (development values, no credentials) stands
-      # in. The images do not contain it, and no step starts the app with it.
+      # in. No step starts the app with it.
       HB_ENV_FILE: .env.example
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,8 +77,8 @@ jobs:
           echo "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f  $RUNNER_TEMP/trivy.tar.gz" \
             | sha256sum --check --strict
           tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
-      # A HIGH or CRITICAL vulnerability with a fix available, in the image's Debian or Python
-      # packages, fails the job.
+      # A fixable HIGH or CRITICAL vulnerability in the image's Debian or Python packages fails the
+      # job, and so does a HIGH or CRITICAL secret in the image (trivy's secret scanner).
       - name: Scan the app image with trivy
         run: >-
           "$RUNNER_TEMP/trivy" image --no-progress --ignore-unfixed --severity HIGH,CRITICAL
