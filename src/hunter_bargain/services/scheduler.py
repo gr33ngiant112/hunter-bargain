@@ -6,11 +6,12 @@ Designed to run inside the same process as the FastAPI app.
 """
 
 import datetime as dt
+import itertools
 import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,6 +23,8 @@ from hunter_bargain.config import settings
 from hunter_bargain.db import SessionLocal
 from hunter_bargain.models import CheckRun, Item
 from hunter_bargain.schemas import PriceCheckResult
+from hunter_bargain.services.heartbeat import send_heartbeat
+from hunter_bargain.services.quota import check_searches_left
 from hunter_bargain.services.searcher import run_price_check
 
 logger = logging.getLogger(__name__)
@@ -39,13 +42,28 @@ scheduler = BackgroundScheduler(
 # A daily run missed while the app was down runs this long after the app starts.
 CATCH_UP_DELAY = dt.timedelta(minutes=1)
 
-# GET /health fails once the last successful check of all items is older than this: the daily
-# job's day, plus two hours for a run that starts late or takes long.
-MAX_SUCCESS_AGE = dt.timedelta(hours=26)
+# GET /health fails once the last successful check of all items is older than the longest gap
+# between the daily job's run times (PRICE_CHECK_CRON), plus this for a run that starts late or
+# takes long: 26 hours for the default daily schedule.
+OVERDUE_AFTER = dt.timedelta(hours=2)
 
-# When start_scheduler started the scheduler. Until a check of all items has succeeded (a new
-# database), GET /health measures from this time instead.
-_started_at: dt.datetime | None = None
+# The longest gap is taken from this many of the daily job's next run times: more than a week of
+# a daily schedule, so one that skips weekends gets their gap.
+_GAP_RUNS = 10
+
+
+@dataclass(frozen=True)
+class _Started:
+    """When start_scheduler started the scheduler, and the age at which the last successful
+    check of all items makes GET /health fail."""
+
+    at: dt.datetime
+    max_success_age: dt.timedelta
+
+
+# Set by start_scheduler. Until a check of all items has succeeded (a new database), GET /health
+# measures from its time instead.
+_started: _Started | None = None
 
 # One price check of all items at a time. The daily job and POST /prices/check-all share this
 # lock, so overlapping runs cannot check, and alert on, the same items twice. It is a plain Lock
@@ -104,12 +122,14 @@ def _run_check_all() -> None:
 
 @dataclass
 class _RunCounts:
-    """What a check of all items did: the counts its check_runs row gets when it ends."""
+    """What a check of all items did: the counts its check_runs row gets when it ends, and the
+    item checks that raised an error, which only decide whether the run failed."""
 
     items_checked: int = 0
     searches_used: int = 0
     engine_errors: int = 0
     alerts_sent: int = 0
+    checks_failed: int = 0
 
     def add(self, result: PriceCheckResult) -> None:
         """Count one item's check that ran to the end."""
@@ -118,15 +138,38 @@ class _RunCounts:
         self.engine_errors += len(result.engine_errors)
         self.alerts_sent += int(result.alert_sent)
 
+    def recorded(self) -> dict[str, int]:
+        """The counts that check_runs records."""
+        return {
+            "items_checked": self.items_checked,
+            "searches_used": self.searches_used,
+            "engine_errors": self.engine_errors,
+            "alerts_sent": self.alerts_sent,
+        }
+
+    def failure(self) -> str | None:
+        """Why the run failed although no error ended it, or None if it succeeded (#24).
+
+        It failed if it checked nothing it set out to: every search it tried failed (a revoked
+        key, no searches left, SerpAPI down), or it had items and every check that ran raised an
+        error. An item deleted during the run is not a failed check.
+        """
+        if self.searches_used == 0 and self.engine_errors > 0:
+            return f"all {self.engine_errors} of its searches failed"
+        if self.items_checked == 0 and self.checks_failed > 0:
+            return f"each of its {self.checks_failed} item checks raised an error"
+        return None
+
 
 @contextmanager
 def _recorded_run() -> Iterator[_RunCounts]:
     """Record the check of all items that runs in the block as a check_runs row.
 
     The row is committed as "running" before the block runs. When the block ends it gets its
-    finished_at, "succeeded" (or "failed" if an exception ended the block) and the counts the
-    block added to the _RunCounts it was given. A run the process does not live to finish stays
-    "running", without counts. Each write uses a short session of its own.
+    finished_at, "succeeded" (or "failed" if an exception ended the block, or _RunCounts.failure
+    gives a reason) and the counts the block added to the _RunCounts it was given. A run the
+    process does not live to finish stays "running", without counts. Each write uses a short
+    session of its own.
     """
     with SessionLocal() as db:
         run = CheckRun(started_at=_now(), status="running")
@@ -137,13 +180,17 @@ def _recorded_run() -> Iterator[_RunCounts]:
     status = "failed"
     try:
         yield counts
-        status = "succeeded"
+        failure = counts.failure()
+        if failure is None:
+            status = "succeeded"
+        else:
+            logger.error("Price check of all items failed: %s", failure)
     finally:
         with SessionLocal() as db:
             db.execute(
                 update(CheckRun)
                 .where(CheckRun.id == run_id)
-                .values(finished_at=_now(), status=status, **asdict(counts))
+                .values(finished_at=_now(), status=status, **counts.recorded())
             )
             db.commit()
 
@@ -153,7 +200,9 @@ def _check_all_items() -> None:
 
     Runs in a background thread, outside any request, so it opens its own sessions: one to list
     the item ids, then one per item. An item deleted during the run is skipped, and a failed
-    check rolls back only its own session, so neither stops the rest of the run.
+    check rolls back only its own session, so neither stops the rest of the run. Once the run is
+    recorded as succeeded, the heartbeat goes out (HEARTBEAT_URL, services/heartbeat.py). After
+    any run that ends, SerpAPI's searches left are checked (services/quota.py).
     """
     logger.info("Price check of all items starting...")
     with _recorded_run() as counts:
@@ -161,28 +210,29 @@ def _check_all_items() -> None:
             item_ids = list(db.scalars(select(Item.id).order_by(Item.id)))
         if not item_ids:
             logger.info("No items to check — skipping.")
-            return
 
         for item_id in item_ids:
-            result = _check_item(item_id)
-            if result is not None:
-                counts.add(result)
+            _check_item(item_id, counts)
     logger.info("Price check of all items complete.")
+    if counts.failure() is None:  # recorded as succeeded
+        send_heartbeat()
+    check_searches_left(counts.searches_used + counts.engine_errors)
 
 
-def _check_item(item_id: int) -> PriceCheckResult | None:
-    """Check one item in a session of its own and return the result; None if the item is gone
-    or its check failed. A failure is logged, and closing the session at the end of the with
-    block rolls back whatever the failed check left uncommitted."""
+def _check_item(item_id: int, counts: _RunCounts) -> None:
+    """Check one item in a session of its own, and count its result or its failed check in
+    `counts`; an item deleted before its check is neither. A failure is logged, and closing the
+    session at the end of the with block rolls back whatever the failed check left uncommitted."""
     with SessionLocal() as db:
         try:
             item = db.get(Item, item_id)
         except Exception:
             logger.exception("Could not load item %d for its price check", item_id)
-            return None
+            counts.checks_failed += 1
+            return
         if item is None:
             logger.info("Item %d was deleted before its check — skipping.", item_id)
-            return None
+            return
         # Read now: after a failed commit the item's attributes can no longer be loaded.
         name = item.name
         try:
@@ -196,13 +246,14 @@ def _check_item(item_id: int) -> PriceCheckResult | None:
             )
         except Exception:
             logger.exception("Price check failed for item %d (%r)", item_id, name)
-            return None
-        return result
+            counts.checks_failed += 1
+            return
+        counts.add(result)
 
 
 def start_scheduler() -> None:
     """Register the daily price check job, catch up a missed daily run, start the scheduler."""
-    global _started_at
+    global _started
     now = _now()
     # Without a time zone the trigger would use the host's local time.
     trigger = CronTrigger.from_crontab(settings.price_check_cron, timezone=settings.price_check_tz)
@@ -215,10 +266,22 @@ def start_scheduler() -> None:
     )
     _schedule_catch_up(trigger, now)
     scheduler.start()
-    _started_at = now
+    _started = _Started(at=now, max_success_age=_longest_gap(trigger, now) + OVERDUE_AFTER)
     logger.info(
         "Scheduler started — cron: %s (%s)", settings.price_check_cron, settings.price_check_tz
     )
+
+
+def _longest_gap(trigger: CronTrigger, now: dt.datetime) -> dt.timedelta:
+    """The longest time between two consecutive run times among the trigger's next _GAP_RUNS.
+
+    Compared in UTC, so a gap across a daylight saving change is the time that really passes.
+    """
+    times = [trigger.get_next_fire_time(None, now)]
+    for _ in range(_GAP_RUNS - 1):
+        times.append(trigger.get_next_fire_time(times[-1], times[-1]))
+    utc = [time.astimezone(dt.UTC) for time in times]
+    return max(later - earlier for earlier, later in itertools.pairwise(utc))
 
 
 def _last_success(db: Session) -> dt.datetime | None:
@@ -271,16 +334,18 @@ def health_problem(db: Session) -> str | None:
     """Why the daily price check is not working, for GET /health; None if it is.
 
     It is not when the scheduler is not running, or when the last successful check of all items
-    finished more than MAX_SUCCESS_AGE ago. Until one has succeeded (a new database), the time is
-    measured from the scheduler's start, so a fresh install is healthy for its first day.
+    finished longer ago than the longest gap between the daily job's run times plus
+    OVERDUE_AFTER: 26 hours for the default daily schedule. Until one has succeeded (a new
+    database), the time is measured from the scheduler's start, so a fresh install is healthy for
+    its first day.
     """
-    if not scheduler.running or _started_at is None:
+    if not scheduler.running or _started is None:
         return "The scheduler is not running: no daily price check will run."
     last_success = _last_success(db)
-    since = last_success or _started_at
-    if _now() - since <= MAX_SUCCESS_AGE:
+    since = last_success or _started.at
+    if _now() - since <= _started.max_success_age:
         return None
-    hours = MAX_SUCCESS_AGE // dt.timedelta(hours=1)
+    hours = f"{_started.max_success_age / dt.timedelta(hours=1):g}"
     if last_success is None:
         return (
             "No check of all items has succeeded since the app started at"

@@ -166,12 +166,37 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch):
 # string to count.
 WIDGET_ROW = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
 
+# SerpAPI's Account API answer as https://serpapi.com/account-api documents it (fetched
+# 2026-10-12): the api_key and account_email are that page's placeholders. A real answer echoes
+# the caller's key and the account's email address.
+ACCOUNT_ANSWER = {
+    "account_id": "5ac54d6adefb2f1dba1663f5",
+    "api_key": "SECRET_API_KEY",
+    "account_email": "demo@serpapi.com",
+    "account_status": "Active",
+    "plan_id": "bigdata",
+    "plan_name": "Big Data Plan",
+    "plan_monthly_price": 250.0,
+    "plan_renewal_date": "2026-11-12",
+    "searches_per_month": 30000,
+    "plan_searches_left": 5958,
+    "extra_credits": 0,
+    "total_searches_left": 5958,
+    "this_month_usage": 24042,
+    "this_hour_searches": 87,
+    "last_hour_searches": 42,
+    "account_rate_limit_per_hour": 6000,
+}
+
 
 @dataclass
 class StubSerpApi:
     """A local stand-in for serpapi.com: every search gets this status and body.
 
     A search whose engine parameter (e.g. google_shopping) is a key of `bodies` gets that body.
+    A request to a path in `paths` gets that path's status and body instead: by default, the
+    Account API (/account.json) answers with ACCOUNT_ANSWER. `requested` lists each request's
+    path, and `queries` its query parameters.
     """
 
     url: str
@@ -180,6 +205,10 @@ class StubSerpApi:
     body: str = json.dumps({"shopping_results": [WIDGET_ROW]})
     content_type: str = "application/json"
     bodies: dict[str, str] = field(default_factory=dict)
+    paths: dict[str, tuple[int, str]] = field(
+        default_factory=lambda: {"/account.json": (200, json.dumps(ACCOUNT_ANSWER))}
+    )
+    requested: list[str] = field(default_factory=list)
 
 
 def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
@@ -213,10 +242,16 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
     class Handler(BaseHTTPRequestHandler):
         @override
         def do_GET(self) -> None:
-            query = parse_qs(urlsplit(self.path).query)
+            url = urlsplit(self.path)
+            query = parse_qs(url.query)
+            stub.requested.append(url.path)
             stub.queries.append(query)
-            body = stub.bodies.get(query.get("engine", [""])[0], stub.body).encode()
-            self.send_response(stub.status)
+            if url.path in stub.paths:
+                status, text = stub.paths[url.path]
+            else:
+                status, text = stub.status, stub.bodies.get(query.get("engine", [""])[0], stub.body)
+            body = text.encode()
+            self.send_response(status)
             self.send_header("Content-Type", stub.content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

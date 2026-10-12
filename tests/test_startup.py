@@ -65,6 +65,7 @@ def test_env_example_holds_no_credentials_and_sends_alerts_to_mailpit(monkeypatc
     settings = Settings(_env_file=REPO_ROOT / ".env.example")
 
     assert settings.serpapi_key.get_secret_value() == ""
+    assert settings.heartbeat_url.get_secret_value() == ""  # it holds the monitor's token
     assert settings.smtp_user == ""
     assert settings.smtp_password.get_secret_value() == ""
     assert settings.smtp_host == "mailpit"
