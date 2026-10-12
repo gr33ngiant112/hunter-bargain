@@ -44,11 +44,11 @@ uv sync --locked --extra dev   # .venv with the versions in uv.lock, dev tools i
 source .venv/bin/activate      # or .venv\Scripts\activate on Windows
 ```
 
-`uv.lock` pins every dependency, and CI installs from it. Change dependencies with `uv add` or
-`uv remove` (or edit `pyproject.toml` and run `uv lock`), upgrade one with
-`uv lock --upgrade-package NAME`, and commit `uv.lock` with `pyproject.toml`: CI fails when the
-lock is out of date. Another CI job runs the tests on the lowest versions `pyproject.toml`
-allows, so raise a floor when the code needs a newer version.
+`uv.lock` pins every dependency, and the Docker image and CI install from it. Change
+dependencies with `uv add` or `uv remove` (or edit `pyproject.toml` and run `uv lock`), upgrade
+one with `uv lock --upgrade-package NAME`, and commit `uv.lock` with `pyproject.toml`: CI fails
+when the lock is out of date. Another CI job runs the tests on the lowest versions
+`pyproject.toml` allows, so raise a floor when the code needs a newer version.
 
 ### Configure
 
@@ -68,6 +68,16 @@ Keep real API keys and SMTP credentials out of the checkout, in the file `HB_ENV
 
 ```bash
 pytest -v
+```
+
+CI runs its checks in Docker, in the Dockerfile's `test` stage: lint, mypy, the tests and the
+migration check. It also runs the tests in that stage on Python 3.13 and 3.14, and in the
+`test-lowest-direct` stage on the lowest versions `pyproject.toml` allows. To run a check as
+CI does:
+
+```bash
+docker build --target test -t hunter-bargain-test .
+docker run --rm hunter-bargain-test pytest -q --cov   # or: ruff check ., mypy
 ```
 
 ### Lint & Format

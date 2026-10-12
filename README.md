@@ -315,8 +315,9 @@ docker compose up --build -d
   on your network, set `HB_BIND_ADDR=0.0.0.0` (or the host's LAN address) in `.env` and run
   `docker compose up -d`. The API has no authentication of its own yet (#1), so do this only on a network
   you trust, or put a reverse proxy with authentication in front.
-- To pick up base-image and dependency fixes, rebuild without the cache:
-  `docker compose build --pull --no-cache && docker compose up -d`
+- The image installs the dependency versions in `uv.lock`, so dependency fixes arrive with an
+  update of the checkout (`git pull`) and a rebuild. To pick up base-image fixes, rebuild without
+  the cache: `docker compose build --pull --no-cache && docker compose up -d`
 
 ### Local Development
 
