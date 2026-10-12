@@ -301,23 +301,36 @@ docker compose up --build -d
 - Settings: the app gets the file `HB_ENV_FILE` names, e.g. `~/.config/hunter-bargain/hb.env` (mode 600),
   set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
   the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
-- Health check: `curl http://localhost:8000/health`
+- Health check: `curl http://localhost:8000/health`. The image also has a Docker `HEALTHCHECK`.
 - SQLite data persisted via Docker volume (`app-data`)
+- The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
+  `data-permissions` service gives the `app-data` volume to that user, so a volume from an
+  older, root-run image needs no manual step (CHANGELOG.md, "Upgrading").
+- The container runs with a read-only root filesystem (`/tmp` is a tmpfs), every Linux
+  capability dropped, `no-new-privileges`, limits of 0.5 CPU, 256 MB of memory and 100
+  processes, and logs capped at three files of 10 MB.
 - Each start migrates the database to the app's schema before it serves requests. Run one app
   process, as the image does (one uvicorn worker), so that two never migrate it at once, and back
   the database up before an upgrade (CHANGELOG.md, "Upgrading").
 - The database uses SQLite's WAL mode: recent writes can sit in `hunter_bargain.db-wal` beside
-  it. Back up with the app stopped, copying any `-wal` and `-shm` files too, or use
-  `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
+  it, so copy it with SQLite's backup API rather than as a file. With the app running:
+
+  ```bash
+  docker compose exec app python -c "import sqlite3; sqlite3.connect('/app/data/hunter_bargain.db').backup(sqlite3.connect('/app/data/backup.db'))"
+  docker compose cp app:/app/data/backup.db ./hunter_bargain-backup.db
+  docker compose exec app rm /app/data/backup.db
+  ```
+
+  Without Docker, `sqlite3 data/hunter_bargain.db ".backup backup.db"` does the same.
 - Container auto-restarts on failure
 - By default the port is published on 127.0.0.1 only. On the host, use `curl http://localhost:8000/...` or
   run the CLI inside the container: `docker compose exec app hb ls`. To reach the API from other machines
   on your network, set `HB_BIND_ADDR=0.0.0.0` (or the host's LAN address) in `.env` and run
   `docker compose up -d`. The API has no authentication of its own yet (#1), so do this only on a network
   you trust, or put a reverse proxy with authentication in front.
-- The image installs the dependency versions in `uv.lock`, so dependency fixes arrive with an
-  update of the checkout (`git pull`) and a rebuild. To pick up base-image fixes, rebuild without
-  the cache: `docker compose build --pull --no-cache && docker compose up -d`
+- The image installs the dependency versions in `uv.lock` on a base image pinned by digest, so
+  dependency and base-image fixes both arrive with an update of the checkout (`git pull`;
+  Dependabot proposes the new versions and digests) and a rebuild: `docker compose up --build -d`
 
 ### Local Development
 

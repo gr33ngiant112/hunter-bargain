@@ -1,9 +1,11 @@
-# uv, from its official image (Dependabot bumps the version).
-FROM ghcr.io/astral-sh/uv:0.12.23 AS uv
+# uv, from its official image (Dependabot bumps the version and the digest).
+FROM ghcr.io/astral-sh/uv:0.12.23@sha256:61d393e44e249f2e4b526b6c7ddcecce245946826e608e11c93ad4f5bba55b21 AS uv
 
-# The Python every stage below starts from. CI's test-python job runs the tests on newer Pythons
-# by replacing this stage: docker build --build-context base=docker-image://python:3.13-slim
-FROM python:3.12-slim AS base
+# The Python every stage below starts from, pinned by digest so that every build gets the same
+# image; Dependabot opens a pull request when python:3.12-slim is rebuilt (#7). CI's test-python
+# job runs the tests on newer Pythons by replacing this stage:
+# docker build --build-context base=docker-image://python:3.13-slim
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS base
 
 # The app and the dependency versions in uv.lock, without the dev tools, in /app/.venv. The app is
 # installed as a package, not as a link to the source.
@@ -44,11 +46,21 @@ ENV PATH="/app/.venv/bin:$PATH"
 FROM base AS runtime
 WORKDIR /app
 COPY --from=build /app/.venv /app/.venv
-ENV PATH="/app/.venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1
 
-# Create data directory for SQLite
-RUN mkdir -p /app/data
+# The app runs as an unprivileged user, uid 10001, which owns the SQLite directory. A new volume
+# mounted there takes that ownership; docker-compose.yml's data-permissions service hands a volume
+# that an older, root-run image created over to it.
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app \
+    && mkdir -p /app/data \
+    && chown 10001:10001 /app/data
+USER 10001
 
 EXPOSE 8000
+
+# Unhealthy while /health fails or answers with an error status.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
 
 CMD ["uvicorn", "hunter_bargain.main:app", "--host", "0.0.0.0", "--port", "8000"]

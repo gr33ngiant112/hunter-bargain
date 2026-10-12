@@ -80,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docker compose build`, runs lint, mypy, the tests and the migration check inside Docker images
   (the tests also on Python 3.13 and 3.14), checks that the image answers `/health`, and fails on
   a fixable HIGH or CRITICAL vulnerability that trivy finds in it.
+- The Docker image runs the app as uid 10001 instead of root and has a `HEALTHCHECK`; its base
+  images are pinned by digest, which Dependabot updates. Docker Compose runs the app with a
+  read-only root filesystem, no Linux capabilities, `no-new-privileges`, CPU, memory and process
+  limits and log rotation, and no longer fixes the container's name (#11, #7).
 
 ### Removed
 
@@ -146,6 +150,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The first start of this version adds each item's alert state (`last_alert_price`,
   `last_alerted_at`) to the `items` table. Existing items start without one, so an item whose
   price is already on target is emailed once more at its next check.
+- The app now runs as uid 10001. `docker compose up --build -d` first runs the one-off
+  `data-permissions` service, which gives the existing `app-data` volume to that user, so there
+  is nothing to do by hand. The container is now named by Compose (e.g. `hunter-bargain-app-1`,
+  not `hunter-bargain-app`); `docker compose exec app ...` and `docker compose logs app` work as
+  before.
 
 ## [0.4.0] - 2026-10-05
 
