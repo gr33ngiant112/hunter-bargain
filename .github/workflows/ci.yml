@@ -29,9 +29,9 @@ jobs:
     env:
       # The name of everything this run creates: the Compose project, its images and containers.
       CI_NAME: ci-hunter-bargain-${{ github.run_id }}-${{ github.run_attempt }}
-      # Compose loads the app's env_file (HB_ENV_FILE, default .env) with the project, and a
-      # checkout has no .env: the committed example (development values, no credentials) stands
-      # in. No step starts the app with it.
+      # The app's env_file (HB_ENV_FILE, default .env) must exist for the Compose versions and
+      # commands that read it with the project, and a checkout has no .env: the committed example
+      # (development values, no credentials) stands in. No step starts the app with it.
       HB_ENV_FILE: .env.example
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
