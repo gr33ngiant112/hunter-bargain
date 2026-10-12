@@ -157,7 +157,9 @@ def test_httpx_request_line_is_redacted(engine_name, fake_key, stub_serpapi, cap
     assert SerpApiShoppingEngine(engine_name).search("widget")
 
     assert FAKE_KEY not in caplog.text
-    [request_line] = [r.getMessage() for r in caplog.records if r.name == "httpx"]
+    [request_line] = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("HTTP Request: ")
+    ]
     assert request_line.startswith(f"HTTP Request: GET {stub_serpapi.url}/search?")
     assert "api_key=***" in request_line
 
