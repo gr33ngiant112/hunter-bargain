@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from hunter_bargain.config import settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult, PriceRecordResponse
+from hunter_bargain.services import history
 from hunter_bargain.services.engines.base import EngineError, SearchEngine, SearchResult
 from hunter_bargain.services.engines.bing import BingShoppingEngine
 from hunter_bargain.services.engines.google import GoogleShoppingEngine
@@ -564,7 +565,8 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     1. Build search query from item name + keywords.
     2. Query each registered engine; an engine that cannot search is logged at ERROR and
        listed in engine_errors, so a failed search is not reported as "no results".
-    3. Persist all price observations.
+    3. Persist all price observations, then read the item's lowest price in the last 90 days
+       and its all-time low, this check's prices included (#31).
     4. If the lowest price meets the target and no earlier alert covers it (_alert_due), email
        an alert, and record its price and time once it is sent.
     5. Return structured results.
@@ -593,6 +595,9 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     relevant_results.sort(key=lambda r: r.price)
 
     records = _persist_results(relevant_results, item, db)
+    now = _now()
+    low_90_days = history.lowest_price(db, item.id, since=now - history.LOW_WINDOW)
+    all_time_low = history.lowest_price(db, item.id)
 
     lowest: SearchResult | None = relevant_results[0] if relevant_results else None
 
@@ -605,7 +610,6 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
             lowest.price,
             item.target_price,
         )
-        now = _now()
         if not _alert_due(item, lowest.price, now):
             logger.info(
                 "Item %d: alert already sent at $%.2f; no new email for $%.2f",
@@ -613,7 +617,9 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
                 item.last_alert_price,
                 lowest.price,
             )
-        elif send_price_alert(item=item, result=lowest):
+        elif send_price_alert(
+            item=item, result=lowest, low_90_days=low_90_days, all_time_low=all_time_low
+        ):
             alert_sent = True
             # Only a sent alert counts: after a failed send, the next check tries again.
             item.last_alert_price = lowest.price
@@ -631,4 +637,6 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
         records=[PriceRecordResponse.model_validate(r) for r in records],
         engine_errors=engine_errors,
         alert_sent=alert_sent,
+        low_90_days=low_90_days,
+        all_time_low=all_time_low,
     )

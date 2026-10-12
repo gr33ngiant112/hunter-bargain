@@ -7,7 +7,7 @@ import httpx
 import pytest
 from click.testing import CliRunner
 
-from hunter_bargain.cli import cli
+from hunter_bargain.cli import _sparkline, cli
 
 FAKE_ITEM = {
     "id": 1,
@@ -519,3 +519,17 @@ class TestCustomUrl:
         assert result.exit_code == 0
         called_url = mock_req.call_args[0][1]
         assert called_url == "http://remote:5000/api/v1/items/"
+
+
+@pytest.mark.parametrize(
+    ("values", "line"),
+    [
+        ([5.0], "▄"),
+        ([3.0, 3.0, 3.0], "▄▄▄"),  # no spread: one middle height
+        ([1.0, 2.0, 3.0], "▁▅█"),
+        ([40.0, 20.0, 25.0], "█▁▃"),
+    ],
+)
+def test_sparkline_scales_between_the_lowest_and_highest(values, line):
+    """hb history's sparkline (#31)."""
+    assert _sparkline(values) == line
