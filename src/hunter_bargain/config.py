@@ -1,9 +1,9 @@
 """Application configuration loaded from environment variables."""
 
 import string
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import EmailStr, Field, SecretStr, field_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -70,6 +70,16 @@ class Settings(BaseSettings):
     # below the median of the same check's results. Out-of-range values fail validation.
     verify_merchant_pct: float = Field(default=40.0, gt=0, lt=100, allow_inf_nan=False)
 
+    # Where price alerts and notices go. "smtp" (the default): email, with the settings above;
+    # while SMTP is not configured, a price alert is written to the log instead. "apprise": the
+    # service APPRISE_URL names, e.g. an ntfy topic. Any other value fails validation.
+    notifier: Literal["smtp", "apprise"] = "smtp"
+    # For NOTIFIER=apprise, an Apprise URL, e.g. ntfy://ntfy.example.com/hunter-bargain; Apprise's
+    # documentation lists the services (https://github.com/caronc/apprise/wiki). It can hold the
+    # service's token, so it is a secret and never logged. NOTIFIER=apprise without it fails
+    # validation, so the app does not start.
+    apprise_url: SecretStr = SecretStr("")
+
     # SerpAPI
     serpapi_key: SecretStr = SecretStr("")
 
@@ -92,6 +102,12 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [entry.strip() for entry in value.split(",") if entry.strip()]
         return value
+
+    @model_validator(mode="after")
+    def _apprise_needs_a_url(self) -> Self:
+        if self.notifier == "apprise" and not self.apprise_url.get_secret_value():
+            raise ValueError("NOTIFIER=apprise needs APPRISE_URL")
+        return self
 
     def is_alert_recipient(self, address: str) -> bool:
         """Return True if alerts may be sent to `address`, i.e. it is in ALERT_RECIPIENTS."""

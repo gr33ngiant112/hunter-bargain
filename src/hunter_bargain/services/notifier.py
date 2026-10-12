@@ -1,7 +1,8 @@
-"""Email notification service.
+"""Notification service: email, or Apprise when NOTIFIER=apprise.
 
-Sends price alerts via SMTP when a tracked item hits its target price, and notices about the app
-itself (SerpAPI searches running low) to ALERT_RECIPIENTS.
+Sends price alerts when a tracked item hits its target price, and notices about the app itself
+(SerpAPI searches running low), through the notifier NOTIFIER selects: SMTP email to the item's
+address and to ALERT_RECIPIENTS (the default), or Apprise to APPRISE_URL, e.g. an ntfy topic.
 """
 
 import html
@@ -13,6 +14,8 @@ from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import urlparse
+
+import apprise
 
 from hunter_bargain.config import settings
 from hunter_bargain.models import Item
@@ -208,6 +211,29 @@ def _send(message: Message) -> None:
         server.send_message(message)
 
 
+def _send_apprise(title: str, body: str) -> bool:
+    """Send `title` and `body` to APPRISE_URL; True if Apprise delivered them. Never raises.
+
+    The URL can hold the service's token, and Apprise's own log, like urllib3's under its
+    requests, quotes the URL or its parts: configure_logging drops their records, and a failure
+    here is logged without the URL or the error's text.
+    """
+    try:
+        notifier = apprise.Apprise()
+        if not notifier.add(settings.apprise_url.get_secret_value()):
+            logger.warning("APPRISE_URL is not a URL Apprise can send to — not sent: %r", title)
+            return False
+        sent = notifier.notify(body=body, title=title, body_format=apprise.NotifyFormat.TEXT)
+    except Exception as e:
+        logger.warning("Apprise failed (%s) — not sent: %r", type(e).__name__, title)
+        return False
+    if not sent:
+        logger.warning("Apprise could not deliver: %r", title)
+        return False
+    logger.info("Sent through Apprise: %r", title)
+    return True
+
+
 def send_price_alert(
     item: Item,
     result: SearchResult,
@@ -215,21 +241,31 @@ def send_price_alert(
     all_time_low: PriceLow | None = None,
     verify_merchant: bool = False,
 ) -> bool:
-    """Send a price alert email for an item that hit its target.
+    """Send a price alert for an item that hit its target, through the notifier NOTIFIER selects.
 
-    The email also shows the item's lowest recorded price in the last 90 days and its all-time
+    The alert also shows the item's lowest recorded price in the last 90 days and its all-time
     low, when they are given (#31). With `verify_merchant`, a price far below the check's other
-    prices, it warns to check the seller instead of offering "Buy Now" (#29).
-    Returns True if the email was sent successfully, False otherwise.
+    prices, it warns to check the seller instead of offering "Buy Now" (#29). While SMTP is not
+    configured, the email notifier writes the alert to the log instead (#28).
+    Returns True if the alert was sent successfully, False otherwise.
     Fails gracefully — never raises to the caller.
     """
-    if not _smtp_configured():
-        logger.warning("SMTP not configured — skipping email notification for item %d", item.id)
+    by_apprise = settings.notifier == "apprise"
+    if not by_apprise and not _smtp_configured():
+        # The alert is not lost: the log gets it, without the recipient's address.
+        logger.warning(
+            "SMTP not configured — price alert for item %d logged, not emailed:"
+            " price %s, target %s, source %s",
+            item.id,
+            result.price,
+            item.target_price,
+            result.source,
+        )
         return False
 
     # The API only accepts ALERT_RECIPIENTS addresses, but rows saved before that check can hold
     # any address, so check again before sending. The address itself is not logged.
-    if not settings.is_alert_recipient(item.notify_email):
+    if not by_apprise and not settings.is_alert_recipient(item.notify_email):
         logger.warning(
             "Recipient for item %d is not in ALERT_RECIPIENTS — skipping email notification",
             item.id,
@@ -237,12 +273,9 @@ def send_price_alert(
         return False
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Price Alert: {item.name} — ${result.price:.2f}"
-        msg["From"] = settings.email_from or settings.smtp_user
-        msg["To"] = item.notify_email
-
-        # Plain text fallback; like the HTML part, it shows the link only for an http(s) URL.
+        subject = f"Price Alert: {item.name} — ${result.price:.2f}"
+        # The plain text: the email's fallback part and the Apprise message. Like the HTML part,
+        # it shows the link only for an http(s) URL.
         lows = _price_lows(low_90_days, all_time_low)
         warning = f"{_verify_merchant_warning()}\n" if verify_merchant else ""
         plain = (
@@ -255,6 +288,13 @@ def send_price_alert(
             + "".join(f"{label}: {value}\n" for label, value in _listing_details(result))
             + f"Link: {_link_url(result.url) or 'N/A'}\n"
         )
+        if by_apprise:
+            return _send_apprise(subject, plain)
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = settings.email_from or settings.smtp_user
+        msg["To"] = item.notify_email
         msg.attach(MIMEText(plain, "plain"))
         msg.attach(MIMEText(_build_html_body(item, result, lows, verify_merchant), "html"))
         _send(msg)
@@ -268,11 +308,14 @@ def send_price_alert(
 
 
 def send_notice(subject: str, text: str) -> bool:
-    """Email a plain-text notice about the app itself to every ALERT_RECIPIENTS address.
+    """Send a plain-text notice about the app itself through the notifier NOTIFIER selects:
+    email to every ALERT_RECIPIENTS address, or Apprise.
 
-    Returns True if it was sent. Skipped, with a warning in the log, when SMTP is not configured
-    or ALERT_RECIPIENTS is empty. Never raises.
+    Returns True if it was sent. The email is skipped, with a warning in the log, when SMTP is
+    not configured or ALERT_RECIPIENTS is empty. Never raises.
     """
+    if settings.notifier == "apprise":
+        return _send_apprise(subject, text)
     if not _smtp_configured():
         logger.warning("SMTP not configured — skipping the email: %s", subject)
         return False
