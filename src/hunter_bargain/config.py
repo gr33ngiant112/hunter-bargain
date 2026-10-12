@@ -1,8 +1,8 @@
 """Application configuration loaded from environment variables."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import EmailStr, SecretStr, field_validator
+from pydantic import EmailStr, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # SMTP email
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 587
+    # "tls": TLS that verifies the server certificate (implicit on port 465, STARTTLS on any
+    # other port), then a login. "none": no TLS and no login, for a local test server such as
+    # Mailpit only. Any other value fails validation, so the app does not start.
+    smtp_security: Literal["tls", "none"] = "tls"
     smtp_timeout: float = 30  # seconds, for the connect and each SMTP command
     smtp_user: str = ""
     smtp_password: SecretStr = SecretStr("")
@@ -37,6 +41,12 @@ class Settings(BaseSettings):
     # Comma-separated in the environment: ALERT_RECIPIENTS=me@example.com,you@example.com
     # An invalid address fails validation, so the app does not start.
     alert_recipients: Annotated[list[EmailStr], NoDecode] = []
+
+    # After an alert for an item, the next one needs a price at least alert_min_drop_pct percent
+    # below the last alert's price (0: any lower price), or alert_cooldown_days since that alert
+    # with the price still on target. Out-of-range values fail validation.
+    alert_cooldown_days: float = Field(default=7.0, ge=0, allow_inf_nan=False)
+    alert_min_drop_pct: float = Field(default=0.0, ge=0, lt=100, allow_inf_nan=False)
 
     # SerpAPI
     serpapi_key: SecretStr = SecretStr("")

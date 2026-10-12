@@ -1,25 +1,77 @@
 services:
+  # Runs once before the app starts and gives the data volume to the app's user, uid 10001 (#11).
+  # A volume that an older, root-run image created belongs to root, and the app could not write
+  # its database; on a volume that already belongs to 10001 this changes nothing.
+  data-permissions:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    user: "0"
+    command: ["chown", "-R", "10001:10001", "/app/data"]
+    volumes:
+      - app-data:/app/data
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt:
+      - no-new-privileges:true
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: hunter-bargain-app
+    depends_on:
+      data-permissions:
+        condition: service_completed_successfully
     ports:
       # Loopback by default, so only this host can reach the API. HB_BIND_ADDR=0.0.0.0 (or this
       # host's LAN address) publishes it on the network; the API has no authentication of its own.
       - "${HB_BIND_ADDR:-127.0.0.1}:${APP_PORT:-8000}:8000"
     env_file:
-      - .env
+      # The app's settings. HB_ENV_FILE names a file outside the checkout for real credentials
+      # (README "Deployment"). Compose reads HB_ENV_FILE, HB_BIND_ADDR and APP_PORT from the
+      # shell or the checkout's .env, never from this file.
+      - ${HB_ENV_FILE:-.env}
     volumes:
       # Persist the SQLite database across container restarts
       - app-data:/app/data
     restart: unless-stopped
+    # The app writes only its database (the volume) and temporary files (/tmp), and needs no
+    # Linux capabilities as uid 10001 (#11).
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+          pids: 100
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  # Development only: a local mail server that keeps every message it receives, so alerts can be
+  # checked without sending real email. `docker compose --profile dev up` starts it next to the
+  # app; plain `docker compose up` does not. .env.example's SMTP values point the app at it.
+  # Read the alerts at http://127.0.0.1:8025.
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    profiles: ["dev"]
+    ports:
+      - "127.0.0.1:8025:8025" # web inbox and API
+      - "127.0.0.1:1025:1025" # SMTP, for the app run on the host (uvicorn)
 
 volumes:
   app-data:

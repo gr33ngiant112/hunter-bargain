@@ -1,15 +1,20 @@
 """Tests for the email notification service."""
 
+import datetime as dt
 import logging
+import os
 import smtplib
 import ssl
+import subprocess
+import sys
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from hunter_bargain.config import Settings
+from hunter_bargain.schemas import PriceLow
 from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.notifier import send_price_alert
 
@@ -64,9 +69,10 @@ def smtp_settings(monkeypatch):
 
     `_env_file=None` keeps any local .env out of the tests. SMTP_TIMEOUT is set through
     the environment so the tests also cover the variable name. ALERT_RECIPIENTS allows
-    `_item()`'s address.
+    `_item()`'s address. SMTP_SECURITY is unset, so the tests get its default.
     """
     monkeypatch.setenv("SMTP_TIMEOUT", "12.5")
+    monkeypatch.delenv("SMTP_SECURITY", raising=False)
     monkeypatch.setenv("ALERT_RECIPIENTS", "user@example.com")
     fake = Settings(
         _env_file=None,
@@ -157,6 +163,41 @@ class TestSendPriceAlert:
         server.starttls.assert_called_once()
         _assert_verifying(server.starttls.call_args.kwargs.get("context"))
         smtp_ssl_cls.assert_not_called()
+
+    def test_default_security_is_starttls_then_login(self, smtp_settings, smtp_classes):
+        """SMTP_SECURITY unset: verified STARTTLS first, then the login, then the message."""
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        server = _server(smtp_cls)
+
+        assert smtp_settings.smtp_security == "tls"
+        assert send_price_alert(item=_item(), result=_result()) is True
+
+        assert [call[0] for call in server.method_calls] == ["starttls", "login", "send_message"]
+        _assert_verifying(server.starttls.call_args.kwargs.get("context"))
+        server.login.assert_called_once_with("bot@example.com", FAKE_PASSWORD)
+        smtp_ssl_cls.assert_not_called()
+
+    @pytest.mark.parametrize("port", [1025, 465])
+    @pytest.mark.parametrize(("user", "password"), [("", ""), ("bot@example.com", FAKE_PASSWORD)])
+    def test_security_none_sends_without_tls_or_login(
+        self, smtp_settings, smtp_classes, port, user, password
+    ):
+        """SMTP_SECURITY=none, for a local test server: no STARTTLS, no SMTPS and no login.
+
+        It sends without credentials, and it never sends the password when one is set.
+        """
+        smtp_settings.smtp_security = "none"
+        smtp_settings.smtp_port = port
+        smtp_settings.smtp_user = user
+        smtp_settings.smtp_password = SecretStr(password)
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        server = _server(smtp_cls)
+
+        assert send_price_alert(item=_item(), result=_result()) is True
+
+        smtp_cls.assert_called_once_with("smtp.example.com", port, timeout=12.5)
+        smtp_ssl_cls.assert_not_called()
+        assert [call[0] for call in server.method_calls] == ["send_message"]
 
     def test_smtp_connect_uses_configured_timeout(self, smtp_settings, smtp_classes):
         smtp_cls, _ = smtp_classes
@@ -255,6 +296,43 @@ class TestAlertContent:
         assert "Source: google_shopping\n" in plain
         assert ">google_shopping</td>" in html_part
 
+    def test_lows_are_shown_after_the_target(self, smtp_settings, smtp_classes):
+        """The item's 90-day and all-time lows (#31)."""
+        server = _server(smtp_classes[0])
+        low_90_days = PriceLow(
+            price=47.5,
+            currency="USD",
+            source="bing_shopping",
+            checked_at=dt.datetime(2026, 10, 2, 9, 0, tzinfo=dt.UTC),
+        )
+        all_time_low = low_90_days.model_copy(
+            update={"price": 39.0, "checked_at": dt.datetime(2026, 3, 26, 9, 0, tzinfo=dt.UTC)}
+        )
+
+        assert send_price_alert(
+            item=_item(), result=_result(), low_90_days=low_90_days, all_time_low=all_time_low
+        )
+
+        plain, html_part = _sent_parts(server)
+        assert (
+            "Target: $60.00\nLowest in 90 days: $47.50 on 2026-10-02\n"
+            "All-time low: $39.00 on 2026-03-26\nSource: "
+        ) in plain
+        assert ">Lowest in 90 days</td><td " in html_part
+        assert ">$47.50 on 2026-10-02</td>" in html_part
+        assert ">All-time low</td><td " in html_part
+        assert ">$39.00 on 2026-03-26</td>" in html_part
+
+    def test_without_lows_no_low_is_shown(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=_result()) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "Target: $60.00\nSource: " in plain
+        assert "Lowest in 90 days" not in html_part
+        assert "All-time low" not in html_part
+
     @pytest.mark.parametrize("line_break", ["\r\n", "\n", "\r", "\u2028"])
     def test_line_break_in_merchant_adds_no_line(self, smtp_settings, smtp_classes, line_break):
         """A merchant name cannot add a line, such as a second Link line, to the plain-text part."""
@@ -313,7 +391,7 @@ class TestAlertContent:
 
 
 class TestSmtpSettings:
-    """SMTP settings: a finite default timeout and a masked password."""
+    """SMTP settings: a finite default timeout, a masked password and SMTP_SECURITY's values."""
 
     def test_smtp_timeout_defaults_to_30_seconds(self, monkeypatch):
         monkeypatch.delenv("SMTP_TIMEOUT", raising=False)
@@ -326,9 +404,32 @@ class TestSmtpSettings:
         assert isinstance(settings.smtp_password, SecretStr)
         assert settings.smtp_password.get_secret_value() == FAKE_PASSWORD
 
+    def test_smtp_security_defaults_to_tls(self, monkeypatch):
+        monkeypatch.delenv("SMTP_SECURITY", raising=False)
+        assert Settings(_env_file=None).smtp_security == "tls"
 
-def test_health_check(client):
-    """GET /health returns ok status."""
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    def test_smtp_security_none_is_read_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("SMTP_SECURITY", "none")
+        assert Settings(_env_file=None).smtp_security == "none"
+
+    @pytest.mark.parametrize("value", ["starttls", "ssl", "off"])
+    def test_invalid_smtp_security_fails_validation(self, monkeypatch, value):
+        monkeypatch.setenv("SMTP_SECURITY", value)
+
+        with pytest.raises(ValidationError, match="smtp_security"):
+            Settings(_env_file=None)
+
+    def test_app_refuses_to_start_with_invalid_smtp_security(self, tmp_path):
+        """config.settings is built on import, so uvicorn cannot load the app with a bad value."""
+        result = subprocess.run(
+            [sys.executable, "-c", "import hunter_bargain.main"],
+            cwd=tmp_path,  # no .env file here
+            env={**os.environ, "SMTP_SECURITY": "starttls"},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert result.returncode != 0
+        assert "validation error for Settings" in result.stderr
+        assert "smtp_security" in result.stderr

@@ -8,9 +8,9 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .ruff_cache/
-tests/
+# Coverage data (pytest --cov); an interrupted run leaves .coverage.* parts
+.coverage
+.coverage.*
 tasks/
 data/
 AGENTS.md
-CHANGELOG.md
-BLOCKED_FEATURES.md

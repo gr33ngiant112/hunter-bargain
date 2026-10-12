@@ -21,12 +21,19 @@ class Item(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    # Optional keywords to refine searches (e.g. "64GB midnight" for an iPhone)
+    # Optional comma-separated terms (e.g. "64GB, midnight" for an iPhone): added to the search
+    # query, and every word of every term must be in a listing's title (services/searcher.py)
     keywords: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Target price — notify when a result is at or below this threshold
     target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Email address to notify for this item
     notify_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The last alert email that was sent: its price and when (#9). None until the first alert,
+    # and again after PATCH changes target_price, so that the next price on target is emailed.
+    last_alert_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_alerted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
@@ -49,8 +56,13 @@ class PriceRecord(Base):
     __tablename__ = "price_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # ON DELETE CASCADE needs foreign key enforcement, which db.py turns on for SQLite. The name
+    # is the one the migration gave the constraint (migrations/versions/84ea40d46025_*.py).
     item_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("items.id"), nullable=False, index=True
+        Integer,
+        ForeignKey("items.id", ondelete="CASCADE", name="fk_price_records_item_id_items"),
+        nullable=False,
+        index=True,
     )
     price: Mapped[float] = mapped_column(Float, nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="USD")
@@ -63,3 +75,31 @@ class PriceRecord(Base):
 
     def __repr__(self) -> str:
         return f"<PriceRecord item_id={self.item_id} price={self.price} source={self.source!r}>"
+
+
+class CheckRun(Base):
+    """One price check of all items, by the daily job or POST /prices/check-all.
+
+    The scheduler reads the last successful run at startup to catch up a missed daily check, and
+    GET /health reads it to tell whether the daily check still happens (services/scheduler.py).
+    """
+
+    __tablename__ = "check_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "running" until the run ends, then "succeeded" or "failed". A run the app did not live to
+    # finish stays "running".
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    # What the run did, recorded when it ends: the items whose check ran to the end, the engine
+    # searches that worked and those that failed (an engine that could not search for an item,
+    # e.g. a SerpAPI error response), and the alert emails sent. None while the run lasts, for a
+    # run the app did not live to finish, and for runs recorded before these columns existed.
+    items_checked: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    searches_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    engine_errors: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alerts_sent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    def __repr__(self) -> str:
+        return f"<CheckRun id={self.id} status={self.status!r} started_at={self.started_at}>"

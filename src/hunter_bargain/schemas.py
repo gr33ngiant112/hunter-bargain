@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import unicodedata
-from datetime import datetime
-from typing import Annotated
+from datetime import UTC, date, datetime
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
@@ -65,7 +65,13 @@ class ItemCreate(BaseModel):
     """Schema for creating a new tracked item."""
 
     name: str = Field(..., min_length=1, max_length=255, description="Product name to search for")
-    keywords: str | None = Field(None, description="Extra search keywords to refine results")
+    keywords: str | None = Field(
+        None,
+        description=(
+            'Comma-separated terms such as "256GB, unlocked", added to the search query. A listing '
+            "counts only if its title has every word of every term."
+        ),
+    )
     target_price: float | None = Field(
         None,
         gt=0,
@@ -126,6 +132,38 @@ class PriceRecordResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PriceLow(BaseModel):
+    """An item's lowest recorded price over some period, and when it was recorded."""
+
+    price: float
+    currency: str
+    source: str
+    checked_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DailyPrices(BaseModel):
+    """The prices recorded for an item on one day (UTC)."""
+
+    day: date
+    low: float
+    median: float
+    count: int
+
+
+class PriceStats(BaseModel):
+    """GET /items/{id}/stats: an item's prices per day over the last `days` days, and its lows."""
+
+    item_id: int
+    item_name: str
+    days: int
+    # Oldest day first; days without a recorded price are left out.
+    per_day: list[DailyPrices]
+    lowest_in_days: PriceLow | None
+    all_time_low: PriceLow | None
+
+
 # ---------- Price check schemas ----------
 
 
@@ -145,3 +183,48 @@ class PriceCheckResult(BaseModel):
     # hourly limit reached: ...". Built from the engine name, HTTP status and SerpAPI's error
     # string only, never from exception text, which can carry the API key.
     engine_errors: list[str] = []
+    # The engines' searches that worked, one per engine; an engine that could not search is in
+    # engine_errors instead. A check of all items adds these up in its check_runs row.
+    searches_used: int = 0
+    # True when this check emailed an alert. False when no price met the target, when the last
+    # alert already covers this price (no new low, cooldown not over: #9), or when sending failed.
+    alert_sent: bool = False
+    # The item's lowest recorded prices, this check's included: in the last 90 days, and ever.
+    low_90_days: PriceLow | None = None
+    all_time_low: PriceLow | None = None
+
+
+class CheckAllStarted(BaseModel):
+    """POST /prices/check-all's answer: the check of all items runs in the background."""
+
+    status: Literal["started"] = "started"
+
+
+# ---------- Check run schemas ----------
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """A time read back from SQLite, which drops the time zone, as the UTC time it was stored in."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+class CheckRunResponse(BaseModel):
+    """One check of all items, by the daily job or POST /prices/check-all (GET /runs)."""
+
+    id: int
+    started_at: datetime
+    finished_at: datetime | None
+    status: Literal["running", "succeeded", "failed"]
+    # Recorded when the run ends: None until then, for a run the app did not live to finish, and
+    # for runs recorded before these counts were. engine_errors counts the engine searches that
+    # failed, e.g. on a SerpAPI error response; searches_used, those that worked.
+    items_checked: int | None
+    searches_used: int | None
+    engine_errors: int | None
+    alerts_sent: int | None
+
+    model_config = {"from_attributes": True}
+
+    _utc = field_validator("started_at", "finished_at")(_as_utc)

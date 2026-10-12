@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)",
+      "Read(~/.config/hunter-bargain/**)",
+      "Edit(~/.config/hunter-bargain/**)"
+    ],
+    "ask": [
+      "Bash(docker compose *)",
+      "Bash(docker-compose *)",
+      "Bash(uvicorn *)",
+      "Bash(hb check*)",
+      "Bash(curl *)"
+    ]
+  }
+}

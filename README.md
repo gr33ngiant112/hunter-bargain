@@ -27,7 +27,7 @@ Think of it as a deal-hunting laptop that *actually* does useful work.
 ### Key Features
 
 - **Multi-engine search** — Queries Google Shopping and Bing Shopping simultaneously via [SerpAPI](https://serpapi.com/)
-- **Smart filtering** — Relevance scoring, price floor detection, and accessory filtering so you get actual products, not phone cases
+- **Smart filtering** — Model-number and keyword matching, price floor detection, and accessory and second-hand filtering so you get the actual product, not a phone case, an older model or a refurbished one
 - **Email alerts** — Styled HTML emails with a "Buy Now" button when your target price is hit
 - **Scheduled checks** — Automatic daily price checks via APScheduler (configurable cron)
 - **On-demand checks** — Trigger a price check anytime via API or CLI
@@ -43,6 +43,7 @@ Think of it as a deal-hunting laptop that *actually* does useful work.
 - [Docker](https://docs.docker.com/get-docker/) & Docker Compose
 - A free [SerpAPI key](https://serpapi.com/) for search engine access
 - SMTP credentials for email alerts (e.g., [Gmail App Password](https://support.google.com/accounts/answer/185833))
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) to install the `hb` CLI
 
 ### 1. Clone & configure
 
@@ -52,12 +53,24 @@ cd hunter-bargain
 cp .env.example .env
 ```
 
-Edit `.env` with your credentials:
+The checkout's `.env` holds development values only: no credentials, and alerts go to Mailpit
+(see [Local Development](#local-development)). Real settings go in a file outside the checkout,
+so that nothing run in it (pytest, uvicorn, a coding agent) loads them. `HB_ENV_FILE` in `.env`
+tells Docker Compose to give that file to the app:
+
+```bash
+mkdir -p ~/.config/hunter-bargain
+install -m 600 .env.example ~/.config/hunter-bargain/hb.env
+echo "HB_ENV_FILE=$HOME/.config/hunter-bargain/hb.env" >> .env
+```
+
+Edit `~/.config/hunter-bargain/hb.env` with your credentials:
 
 ```env
 SERPAPI_KEY=your-serpapi-key
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
+SMTP_SECURITY=tls
 SMTP_USER=you@gmail.com
 SMTP_PASSWORD=your-app-password
 EMAIL_FROM=you@gmail.com
@@ -75,8 +88,9 @@ The API is live at **http://localhost:8000**. Interactive docs at **http://local
 ### 3. Track your first item
 
 ```bash
-# Install the CLI
-pip install -e .
+# Install the CLI, with the versions in uv.lock, into .venv
+uv sync --locked
+source .venv/bin/activate
 
 # Add an item
 hb add "PlayStation 5" -e you@gmail.com -t 399.99 -k "disc edition"
@@ -96,11 +110,11 @@ Output:
 | Feature | Description |
 |---------|-------------|
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
-| 🧠 Relevance filtering | Word overlap scoring, accessory term blocklist, price floor detection, Google Shopping extensions metadata |
-| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback |
-| ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable) |
+| 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
+| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
+| ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
-| 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check` — full CRUD from your terminal |
+| 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `history`, `status` — full CRUD from your terminal |
 | 🌐 REST API | FastAPI with Pydantic validation, auto-generated OpenAPI docs |
 | 🐳 Docker | Single-container deployment with health checks and volume persistence |
 | 📊 Price history | Every price observation persisted to SQLite for trend analysis |
@@ -119,11 +133,18 @@ hb ls
 # Update an item's target price
 hb update 1 -t 849.99
 
-# Run a price check (single item)
+# Run a price check (single item); also shows its lowest price in 90 days and all-time low
 hb check 1
 
-# Run a price check (all items)
+# Price history: the lowest price on each day as a sparkline, and the lows (default 90 days)
+hb history 1 --days 30
+
+# Start a price check of all items in the background (alerts are emailed; no prices printed)
 hb check
+
+# Show the last price check of all items: when it ran, how it ended, items checked, searches
+# used, engine errors (searches that failed) and alerts sent
+hb status
 
 # Remove an item (with confirmation)
 hb rm 1
@@ -136,6 +157,9 @@ hb --url http://myserver:9000 ls
 
 # Or set via environment variable
 export HUNTER_BARGAIN_URL=http://myserver:9000
+
+# Wait longer for the server (default 60 seconds)
+hb --timeout 120 check 1
 ```
 
 ## API Reference
@@ -153,13 +177,27 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | `GET` | `/items/{id}` | Get a specific item |
 | `PATCH` | `/items/{id}` | Update an item |
 | `DELETE` | `/items/{id}` | Delete an item |
+| `GET` | `/items/{id}/prices` | The item's recorded prices, newest first. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
+| `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low |
 
 ### Price Checks
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/prices/check/{id}` | Check prices for one item |
-| `POST` | `/prices/check-all` | Check prices for all items |
+| `POST` | `/prices/check-all` | Start a price check of all items in the background: 202 at once, or 409 while a check of all items (this endpoint's or the daily job's) is running. Results go to the price history, the log and alert emails |
+
+### Runs
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/runs` | The latest price checks of all items (the daily job's and `/prices/check-all`'s), newest first: `?limit=` (default 10, at most 100) |
+
+Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
+
+### Health
+
+`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items finished more than 26 hours ago. Until a check has succeeded (a new database), the 26 hours count from the app's start. After the app was down for more than a day, it answers 503 until the catch-up check, a minute after the start, succeeds. Docker Compose's healthcheck reads it.
 
 ### Example: Create an item
 
@@ -175,6 +213,8 @@ curl -X POST http://localhost:8000/api/v1/items/ \
 ```
 
 `notify_email` must be one of the `ALERT_RECIPIENTS` addresses; create and update return 422 for any other address.
+`keywords` is optional: comma-separated terms that are added to the search query, and a listing counts only if its title has every word of every term, in any order (here `founders` and `edition`; `"256GB, unlocked"` also matches "256 GB ... Unlocked"). Filler words such as "the", "for" or "with" are not required.
+Name the item the way listings do. A generation can be written either way: `AirPods Pro 2` also matches titles that say "(2nd Generation)", "2nd Gen" or "Gen 2". A title whose main noun is a word such as "earbuds", "keyboard", "lens" or "case" counts as an accessory unless the item's name or keywords have that word, so when the product is itself one of these, put the word in `name`: `AirPods Pro 2 earbuds` keeps "Apple AirPods Pro 2 Wireless Earbuds, ...", which `AirPods Pro 2` rejects.
 `name` and `keywords` must not contain control characters such as line breaks, tabs or ESC; create and update return 422 if they do.
 `name` must not be blank (whitespace only), and an update cannot set `name` or `notify_email` to null; `target_price` must be a finite number above 0 and at most 1,000,000. Create and update return 422 otherwise.
 
@@ -195,11 +235,12 @@ Response:
   "lowest_url": "https://www.google.com/shopping/product/...",
   "results_count": 5,
   "records": [...],
-  "engine_errors": []
+  "engine_errors": [],
+  "searches_used": 2
 }
 ```
 
-`engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
+`searches_used` counts the engines' searches that worked. `engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
 
 ## Architecture
 
@@ -213,7 +254,8 @@ src/hunter_bargain/
 ├── cli.py               # Click-based CLI (hb command)
 ├── api/
 │   ├── items.py         # CRUD: POST/GET/PATCH/DELETE /api/v1/items
-│   └── prices.py        # POST /api/v1/prices/check/{id}, /check-all
+│   ├── prices.py        # POST /api/v1/prices/check/{id}, /check-all
+│   └── runs.py          # GET /api/v1/runs: each price check of all items
 └── services/
     ├── searcher.py      # Multi-engine orchestrator + relevance filtering
     ├── notifier.py      # SMTP email alerts with HTML templates
@@ -238,7 +280,8 @@ User adds item → Stored in SQLite
     └──────────────────┼──────────────────┘
                        ↓
          Aggregate + Relevance Filter
-         (word overlap, price floor, extensions, accessory blocklist)
+         (model numbers, keywords, word overlap, price floor,
+          extensions, accessories, second-hand listings)
                        ↓
          Persist price records to SQLite
                        ↓
@@ -247,23 +290,27 @@ User adds item → Stored in SQLite
 
 ## Configuration
 
-All configuration is via environment variables (`.env` file). The app ignores `.env` keys it does not use, such as Docker Compose's `HB_BIND_ADDR` and `APP_PORT`:
+All configuration is via environment variables (`.env` file, or the file `HB_ENV_FILE` names under Docker Compose). The app ignores `.env` keys it does not use, such as Docker Compose's `HB_BIND_ADDR`, `APP_PORT` and `HB_ENV_FILE`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | `sqlite:///./data/hunter_bargain.db` | SQLAlchemy database URL |
 | `SERPAPI_KEY` | — | SerpAPI key (required for searches) |
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
-| `SMTP_PORT` | `587` | SMTP server port; `465` uses implicit TLS, any other port uses STARTTLS. Both verify the server certificate |
+| `SMTP_PORT` | `587` | SMTP server port; with `SMTP_SECURITY=tls`, `465` uses implicit TLS and any other port uses STARTTLS. Both verify the server certificate |
+| `SMTP_SECURITY` | `tls` | `tls`: TLS that verifies the server certificate, then a login with `SMTP_USER` and `SMTP_PASSWORD`. `none`: no TLS and no login, for a local test server such as Mailpit only. Any other value stops the app at startup |
 | `SMTP_TIMEOUT` | `30` | Seconds to wait for the SMTP server before giving up |
 | `SMTP_USER` | — | SMTP login username |
 | `SMTP_PASSWORD` | — | SMTP login password |
 | `EMAIL_FROM` | `SMTP_USER` | From address for alerts |
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
+| `ALERT_MIN_DROP_PCT` | `0` | How far below an item's last alert price, in percent, a new low must be to send another alert; `0` alerts on any lower price. At least 0 and less than 100 |
+| `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ` |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
 | `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
 | `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
+| `HB_ENV_FILE` | `.env` | Docker Compose only: the file whose settings the app gets. Point it at a file outside the checkout that holds the real credentials (see [Deployment](#deployment)). Compose reads it from the shell or the checkout's `.env` |
 | `LOG_LEVEL` | `info` | Logging level |
 
 ## Deployment
@@ -274,25 +321,60 @@ All configuration is via environment variables (`.env` file). The app ignores `.
 docker compose up --build -d
 ```
 
-- Health check: `curl http://localhost:8000/health`
+- Settings: the app gets the file `HB_ENV_FILE` names, e.g. `~/.config/hunter-bargain/hb.env` (mode 600),
+  set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
+  the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
+- Health check: `curl http://localhost:8000/health` answers 503, with the reason, when the scheduler
+  is not running or no price check of all items has succeeded in 26 hours ([Health](#health));
+  `hb status` shows the last check. The image's Docker `HEALTHCHECK` reads the same endpoint.
 - SQLite data persisted via Docker volume (`app-data`)
+- The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
+  `data-permissions` service gives the `app-data` volume to that user, so a volume from an
+  older, root-run image needs no manual step (CHANGELOG.md, "Upgrading").
+- The container runs with a read-only root filesystem (`/tmp` is a tmpfs), every Linux
+  capability dropped, `no-new-privileges`, limits of 0.5 CPU, 256 MB of memory and 100
+  processes, and logs capped at three files of 10 MB.
+- Each start migrates the database to the app's schema before it serves requests. Run one app
+  process, as the image does (one uvicorn worker), so that two never migrate it at once, and back
+  the database up before an upgrade (CHANGELOG.md, "Upgrading").
+- The database uses SQLite's WAL mode: recent writes can sit in `hunter_bargain.db-wal` beside
+  it, so copy it with SQLite's backup API rather than as a file. With the app running:
+
+  ```bash
+  docker compose exec app python -c "import sqlite3; sqlite3.connect('/app/data/hunter_bargain.db').backup(sqlite3.connect('/app/data/backup.db'))"
+  docker compose cp app:/app/data/backup.db ./hunter_bargain-backup.db
+  docker compose exec app rm /app/data/backup.db
+  ```
+
+  Without Docker, `sqlite3 data/hunter_bargain.db ".backup backup.db"` does the same.
 - Container auto-restarts on failure
 - By default the port is published on 127.0.0.1 only. On the host, use `curl http://localhost:8000/...` or
   run the CLI inside the container: `docker compose exec app hb ls`. To reach the API from other machines
   on your network, set `HB_BIND_ADDR=0.0.0.0` (or the host's LAN address) in `.env` and run
   `docker compose up -d`. The API has no authentication of its own yet (#1), so do this only on a network
   you trust, or put a reverse proxy with authentication in front.
-- To pick up base-image and dependency fixes, rebuild without the cache:
-  `docker compose build --pull --no-cache && docker compose up -d`
+- The image installs the dependency versions in `uv.lock` on a base image pinned by digest, so
+  dependency and base-image fixes both arrive with an update of the checkout (`git pull`;
+  Dependabot proposes the new versions and digests) and a rebuild: `docker compose up --build -d`
 
 ### Local Development
 
 ```bash
-python -m venv .venv
+uv sync --locked --extra dev   # .venv with the versions in uv.lock, dev tools included
 source .venv/bin/activate
-pip install -e ".[dev]"
 uvicorn hunter_bargain.main:app --reload
 ```
+
+To see alerts without sending real email, start Mailpit, a local mail server that keeps every
+message, with the `dev` Compose profile. With `.env` copied from `.env.example`, the app sends
+alerts to it, and its inbox is at http://127.0.0.1:8025:
+
+```bash
+docker compose --profile dev up --build    # the app and Mailpit
+docker compose --profile dev up -d mailpit # Mailpit alone, for uvicorn: set SMTP_HOST=127.0.0.1
+```
+
+If `.env` sets `HB_ENV_FILE`, the app gets the real settings instead; `HB_ENV_FILE=.env docker compose --profile dev up` overrides it.
 
 ## Development
 
@@ -315,8 +397,9 @@ ruff format .     # Format
 
 | Command | Description |
 |---------|-------------|
-| `pip install -e ".[dev]"` | Install with dev dependencies |
+| `uv sync --locked --extra dev` | Install the locked dependencies, dev tools included, into `.venv` |
 | `docker compose up --build` | Run with Docker |
+| `docker compose --profile dev up --build` | Run with Docker and Mailpit, which keeps alerts instead of sending them |
 | `pytest -v` | Run test suite (59 tests) |
 | `ruff check .` | Lint check |
 | `ruff format .` | Auto-format |

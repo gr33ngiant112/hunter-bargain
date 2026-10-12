@@ -5,9 +5,14 @@ __pycache__/
 *.pyo
 .pytest_cache/
 .ruff_cache/
+# Coverage data (pytest --cov); an interrupted run leaves .coverage.* parts
+.coverage
+.coverage.*
 dist/
 build/
 *.egg-info/
 .eggs/
 data/
 .venv/
+# Agent session notes stay local
+tasks/

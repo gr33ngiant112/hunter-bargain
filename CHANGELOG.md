@@ -7,6 +7,169 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-12
+
+Upgrading from 0.4.0: read these notes first.
+
+- Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
+  for all items, must change: check-all now answers `{"status": "started"}`. Use
+  `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
+- Back up the database first: stop the app and copy its data directory (in Docker, the
+  `app-data` volume). The first start of this version marks an existing database as the schema
+  it already has, then migrates it; its rows are kept. There is nothing to run by hand.
+- Run one app process, as the image does: migrations run as the app starts, and two processes
+  starting together could both migrate the same database.
+- The database now uses SQLite's WAL mode, so recent writes can sit in `hunter_bargain.db-wal`
+  beside the database file. Back up with the app stopped and copy any `-wal` and `-shm` files
+  too, or use `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
+- Move the real settings out of the checkout. From the checkout, with the app's settings in
+  `.env`: `mkdir -p ~/.config/hunter-bargain && install -m 600 .env ~/.config/hunter-bargain/hb.env`,
+  then `cp .env.example .env` and `echo "HB_ENV_FILE=$HOME/.config/hunter-bargain/hb.env" >> .env`.
+  Copy any `HB_BIND_ADDR` or `APP_PORT` you had set into the new `.env` as well: Compose reads
+  those from the checkout's `.env` or the shell only. `docker compose up -d` then recreates the
+  app with the same settings.
+- Keywords are now required words in a listing's title. An item whose keywords were search hints
+  that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
+  stop matching: change them with `hb update ITEM_ID --keywords "..."` or
+  `PATCH /api/v1/items/{id}`.
+- The first start of this version adds the `check_runs` table; existing rows are not changed. A
+  missed daily check is caught up only once a check of all items has succeeded on this version:
+  the first start after the upgrade has no run to compare with, so it starts no extra check.
+- The first start of this version adds each item's alert state (`last_alert_price`,
+  `last_alerted_at`) to the `items` table. Existing items start without one, so an item whose
+  price is already on target is emailed once more at its next check.
+- The app now runs as uid 10001. `docker compose up --build -d` first runs the one-off
+  `data-permissions` service, which gives the existing `app-data` volume to that user, so there
+  is nothing to do by hand. The container is now named by Compose (e.g. `hunter-bargain-app-1`,
+  not `hunter-bargain-app`); `docker compose exec app ...` and `docker compose logs app` work as
+  before.
+
+### Added
+
+- Price history (#31): `GET /api/v1/items/{id}/prices` lists an item's recorded prices, newest
+  first, and `GET /api/v1/items/{id}/stats` gives its low and median price per day and its
+  lowest prices. `hb history ID` shows the lowest price of each day as a sparkline. Alert emails
+  and `hb check` also show the item's lowest price in the last 90 days and its all-time low.
+- Database migrations (Alembic, in `src/hunter_bargain/migrations`): the app migrates its database
+  as it starts, so a release can change the schema of an existing database. `alembic.ini` serves
+  the `alembic` command in development, and CI fails when the models need a migration that does
+  not exist yet.
+- Pre-commit hooks (`.pre-commit-config.yaml`): Ruff lint and format, mypy on `src`, a YAML check
+  and a private-key check before each commit; `pre-commit install` once per clone
+- `hb --timeout SECONDS`: how long the CLI waits for the server (default 60; it was a fixed 30,
+  less than a slow check of both engines can take)
+- `HB_ENV_FILE`: Docker Compose gives the app the settings in that file (default `.env`), so the
+  real credentials can live outside the checkout, e.g. in `~/.config/hunter-bargain/hb.env`
+- `SMTP_SECURITY`: `tls` (the default, as before) or `none`, which sends without TLS and without
+  a login, for a local test server only
+- A Mailpit service under the `dev` Compose profile: `docker compose --profile dev up` keeps alerts
+  in a local inbox at http://127.0.0.1:8025 instead of sending them
+- `.claude/settings.json`: Claude Code may not read or edit `.env` or `~/.config/hunter-bargain/`,
+  and asks before running `docker compose`, `uvicorn`, `hb check` or `curl`
+- A `check_runs` table: each check of all items, by the daily job or
+  `POST /api/v1/prices/check-all`, records when it started and finished, whether it succeeded,
+  and when it ends, the items it checked, the searches it used, its engine errors (searches that
+  failed, such as on a SerpAPI error response) and the alerts it sent
+- `GET /api/v1/runs`: the latest checks of all items, newest first (`?limit=`, default 10), and
+  `hb status`, which shows the last one
+- `ALERT_MIN_DROP_PCT` (default 0) and `ALERT_COOLDOWN_DAYS` (default 7): how far below an item's
+  last alert a new low must be, and how many days pass before a price still on target is emailed
+  again
+- `alert_sent` in the result of `POST /api/v1/prices/check/{item_id}`: whether the check emailed
+  an alert
+- `searches_used` in the same result: how many of the engines' searches worked
+- `SECURITY.md`: report a vulnerability privately, through GitHub's private vulnerability
+  reporting, not in a public issue
+- `.github/dependabot.yml`: weekly Dependabot pull requests for `uv.lock` (the floors in
+  `pyproject.toml` stay as set), the GitHub Actions, the Docker base image (without Python
+  version changes) and the Mailpit image
+- A commit-message check: a commit-msg hook and a CI job reject a first line that does not start
+  with a type from CONTRIBUTING.md (`feat:`, `fix(cli):` and so on). In a clone set up before
+  this, run `pre-commit install` again to get the hook
+
+### Changed
+
+- `GET /health` answers 503, with the reason, when the scheduler is not running or no check of
+  all items has succeeded in 26 hours (counted from the app's start until one has); it answered
+  `{"status": "ok"}` whatever happened. The healthy answer is unchanged.
+- `POST /api/v1/prices/check-all` answers 202 at once and checks every item in the background,
+  as the daily job does: results go to the price history, the log and alert emails. It answers
+  409 while a check of all items, its own or the daily job's, is running.
+- `hb check` without an item ID starts that background check and prints no prices;
+  `hb check ITEM_ID` still prints the item's prices
+- Keywords now filter results as well as refine the search: every word of each comma-separated
+  keyword term must appear in a listing's title (`256GB` also matches "256 GB"). Second-hand
+  listings are skipped: Google Shopping rows with a `second_hand_condition`, and titles saying
+  renewed, refurbished, restored, used, pre-owned, open box or for parts.
+- `AGENTS.md` is a short, hand-written guide for coding agents: commands, what not to do, and
+  facts the code does not show. Workflow and style rules are in `CONTRIBUTING.md` only.
+- CI skips draft pull requests and runs when a pull request is marked ready for review
+- `.env.example` holds development values: alerts go to Mailpit, and the SerpAPI key and SMTP
+  login are empty
+- Dependencies are locked in `uv.lock`. CI installs from it with `uv sync --locked` and fails
+  when it is out of date with `pyproject.toml`; a development setup is now
+  `uv sync --locked --extra dev`.
+- Higher minimum versions: FastAPI 0.133 (it checks the Content-Type of JSON requests and, unlike
+  0.132, allows Starlette 1.x), Pydantic 2.7 and APScheduler 3.11 (3.10 fails to import with
+  current setuptools). A CI job runs the tests on the lowest versions `pyproject.toml` allows.
+- The dependency scan (osv-scanner) reads `uv.lock` and fails CI on a known vulnerability; it
+  was report-only
+- The tests build Starlette's TestClient on httpx2, a new dev dependency, so they run without a
+  deprecation warning
+- The tests no longer depend on the developer's setup: each test starts from the default
+  settings, whatever `.env` or the environment holds, and a test that connects to another machine
+  fails
+- A warning fails the test that raised it. CI also checks types with mypy, fails when the tests'
+  branch coverage is under 85%, scans the code with Semgrep's Python and FastAPI rules, and lints
+  the workflows with zizmor and actionlint. Higher minimum versions: SQLAlchemy 2.0.16 (older
+  releases cause a deprecation warning on Python 3.12) and, for development, pytest-cov 7.0 (with
+  older releases, `pytest --cov` fails to combine the coverage of the tests' subprocesses).
+- The Docker image installs the app and the versions in `uv.lock`, in a multi-stage build with no
+  compiler, uv or dev tools in the final image; it starts as before. CI builds it with
+  `docker compose build`, runs lint, mypy, the tests and the migration check inside Docker images
+  (the tests also on Python 3.13 and 3.14), checks that the image answers `/health`, and fails on
+  a fixable HIGH or CRITICAL vulnerability that trivy finds in it.
+- The Docker image runs the app as uid 10001 instead of root and has a `HEALTHCHECK`; its base
+  images are pinned by digest, which Dependabot updates. Docker Compose runs the app with a
+  read-only root filesystem, no Linux capabilities, `no-new-privileges`, CPU, memory and process
+  limits and log rotation, and no longer fixes the container's name (#11, #7).
+
+### Removed
+
+- The first build session's notes: `tasks/` (now ignored by git) and `BLOCKED_FEATURES.md`. The
+  purchase-links spec moved from `FEATURES.md` to `docs/specs/2026-03-03-purchase-links.md`, and
+  the open backlog item is issue #54.
+- Unused dependencies: beautifulsoup4, lxml and python-dotenv (pydantic-settings still installs
+  python-dotenv), and pytest-asyncio, respx and a second httpx entry in the dev extra
+
+### Fixed
+
+- SQLite enforces foreign keys: deleting an item deletes its price records in the database too
+  (ON DELETE CASCADE), and a price record for an item that does not exist is refused. Price
+  records left behind by items deleted earlier are kept.
+- The daily check is skipped, with a warning in the log, while a check of all items started
+  through the API runs, so no item is checked and alerted on twice
+- The CLI prints a clear error and exits 1 when the server does not answer in time or the
+  request fails, instead of a traceback
+- Relevance filter: previous-generation, look-alike and refurbished listings no longer alert (an
+  iPhone 13 Pro for an iPhone 15 Pro, a WH-1000XM4 for a WH-1000XM5, a PlayStation 4 for a
+  PlayStation 5), and routers, camera kits, vacuums, tablets, laptops and monitors are no longer
+  rejected for words such as "Band", "Lens", "Filter", "Screen", "Keyboard" or "Stand" in their
+  titles. An item name with no word to match, such as "The", no longer accepts every listing.
+- Relevance filter: a product generation counts as its number, so an item named "AirPods Pro 2"
+  matches titles that say "(2nd Generation)", "2nd Gen" or "Gen 2", and other generations are
+  still rejected
+- A daily check missed while the app was down, or one that failed, runs a minute after the app
+  next starts, with a warning in the log naming the missed time. A daily run that starts late
+  because the host was suspended or busy still runs within 3 hours; it was skipped once it was
+  more than 1 second late.
+- A price that stays at or below an item's target is emailed once, not at every check: the next
+  alert needs a lower price, or 7 days (`ALERT_COOLDOWN_DAYS`). A failed send is tried again at
+  the next check, and a new `target_price` starts the item's alerts over.
+- A search result without SerpAPI's `extracted_price` is skipped unless its price is a plain
+  dollar amount such as "$1,299.00". A comma decimal was misread: "$1.299,00" as 1.299 dollars,
+  "$12,99" as 1,299 dollars and "$0,299" as 299 dollars.
+
 ## [0.4.0] - 2026-10-05
 
 No earlier version was tagged, and the package reported 0.1.0 until this release. The version
@@ -126,3 +289,7 @@ docs read.
 - Docker and docker-compose setup
 - Comprehensive test suite (24 tests)
 - Environment-based configuration via pydantic-settings
+
+[Unreleased]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/gr33ngiant112/hunter-bargain/releases/tag/v0.4.0

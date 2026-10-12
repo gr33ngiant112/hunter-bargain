@@ -1,15 +1,24 @@
 """Tests for the scheduled price check job."""
 
+import datetime as dt
+import functools
+import json
 import logging
+import os
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
+from pydantic import SecretStr
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+from test_searcher import SEARCH_ERROR_BODY
 
 from hunter_bargain.config import Settings, settings
-from hunter_bargain.models import Item, PriceRecord
+from hunter_bargain.models import CheckRun, Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services import scheduler as scheduler_module
 from hunter_bargain.services.scheduler import _scheduled_price_check, start_scheduler
@@ -50,10 +59,13 @@ def test_scheduled_check_logs_item_names_with_repr(db_session, caplog):
 
 
 @pytest.fixture
-def daily_trigger(monkeypatch):
+def daily_trigger(monkeypatch, db_session):
     """Return a function that runs start_scheduler and returns the daily job's trigger."""
     fresh = BackgroundScheduler()
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
+    monkeypatch.setattr(scheduler_module, "_started_at", None)  # start_scheduler sets it
+    # start_scheduler reads the check_runs records: an empty test database, so no catch-up.
+    monkeypatch.setattr(scheduler_module, "SessionLocal", _sessions(db_session))
 
     def start():
         start_scheduler()
@@ -245,3 +257,397 @@ def test_failed_check_leaves_none_of_its_writes_behind(db_session, three_items):
     db_session.expire_all()
     saved = sorted(record.item_id for record in db_session.query(PriceRecord))
     assert saved == [first, third]
+
+
+def test_daily_job_is_skipped_while_a_check_of_all_items_runs(db_session, three_items, caplog):
+    """#6: when the cron trigger fires during a check-all run, no item is checked twice."""
+    first, second, third = three_items
+    checked: list[int] = []
+    started, finish = threading.Event(), threading.Event()
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        checked.append(item.id)
+        if item.id == first:
+            started.set()
+            finish.wait(timeout=5)
+        return _empty_result(item)
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+        caplog.at_level(logging.WARNING, logger="hunter_bargain.services.scheduler"),
+    ):
+        assert scheduler_module.start_check_all() is True
+        try:
+            if not started.wait(timeout=5):
+                pytest.fail("setup: the check of all items never started")
+            _scheduled_price_check()  # the daily trigger fires during the run
+        finally:
+            finish.set()
+            if not scheduler_module._run_lock.acquire(timeout=5):
+                pytest.fail("the check of all items did not end within 5 s")
+            scheduler_module._run_lock.release()
+
+    assert checked == [first, second, third]
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [
+        "Scheduled price check skipped: a price check of all items is already running."
+    ]
+
+
+def test_daily_job_frees_the_run_lock_when_it_fails():
+    """#6: the job's error still reaches APScheduler's log, and the next run is not blocked."""
+    broken = patch(
+        "hunter_bargain.services.scheduler.SessionLocal",
+        side_effect=OperationalError("SELECT items.id", {}, Exception("unable to open database")),
+    )
+    with broken, pytest.raises(OperationalError):
+        _scheduled_price_check()
+
+    assert scheduler_module._run_lock.acquire(blocking=False)
+    scheduler_module._run_lock.release()
+
+
+# #15: each check of all items is recorded in check_runs, and a daily run missed while the app
+# was down is caught up at startup.
+
+
+def _utc(day: int, hour: int, minute: int = 0) -> dt.datetime:
+    """A time in October 2026, in UTC."""
+    return dt.datetime(2026, 10, day, hour, minute, tzinfo=dt.UTC)
+
+
+def _freeze_clock(monkeypatch, *times: dt.datetime) -> None:
+    """The scheduler's clock returns these times, one per call."""
+    clock = iter(times)
+    monkeypatch.setattr(scheduler_module, "_now", lambda: next(clock))
+
+
+def _add_run(db_session, status: str, started_at: dt.datetime, finished_at: dt.datetime | None):
+    db_session.add(CheckRun(status=status, started_at=started_at, finished_at=finished_at))
+    db_session.commit()
+
+
+def _runs(db_session) -> list[tuple[str, dt.datetime, dt.datetime | None]]:
+    """Each check_runs row as (status, started_at, finished_at). SQLite returns the times
+    without a time zone; they are stored in UTC."""
+
+    def utc(value: dt.datetime | None) -> dt.datetime | None:
+        return value.replace(tzinfo=dt.UTC) if value is not None else None
+
+    db_session.expire_all()
+    runs = db_session.scalars(select(CheckRun).order_by(CheckRun.id))
+    return [(run.status, utc(run.started_at), utc(run.finished_at)) for run in runs]
+
+
+# A check_runs row's counts (#24), as _counts returns them.
+COUNTS = (
+    CheckRun.items_checked,
+    CheckRun.searches_used,
+    CheckRun.engine_errors,
+    CheckRun.alerts_sent,
+)
+
+
+def _counts(db_session) -> list[tuple[int | None, ...]]:
+    """Each check_runs row's counts: (items_checked, searches_used, engine_errors, alerts_sent)."""
+    db_session.expire_all()
+    return [tuple(row) for row in db_session.execute(select(*COUNTS).order_by(CheckRun.id))]
+
+
+def _messages(caplog, level: int) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == scheduler_module.__name__ and record.levelno == level
+    ]
+
+
+def _run_daily_job() -> None:
+    _scheduled_price_check()
+
+
+def _run_check_all() -> None:
+    """POST /prices/check-all's background run, waited for."""
+    assert scheduler_module.start_check_all() is True
+    if not scheduler_module._run_lock.acquire(timeout=5):
+        pytest.fail("the check of all items did not end within 5 s")
+    scheduler_module._run_lock.release()
+
+
+both_entry_points = pytest.mark.parametrize(
+    "run_all", [_run_daily_job, _run_check_all], ids=["daily job", "check-all"]
+)
+
+
+@both_entry_points
+def test_check_of_all_items_is_recorded_as_running_then_succeeded(
+    db_session, three_items, monkeypatch, run_all
+):
+    """The row says "running" while the run lasts; a failed item check does not fail the run."""
+    first, second, third = three_items
+    _freeze_clock(monkeypatch, _utc(6, 9), _utc(6, 9, 2))
+    during_the_run: list[tuple[object, ...]] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        if item.id == first:
+            with _sessions(db_session)() as other:
+                rows = other.execute(select(CheckRun.status, CheckRun.finished_at))
+                during_the_run.extend(tuple(row) for row in rows)
+        if item.id == second:
+            raise RuntimeError("engine unavailable")
+        return _empty_result(item)
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+    ):
+        run_all()
+
+    assert during_the_run == [("running", None)]
+    assert _runs(db_session) == [("succeeded", _utc(6, 9), _utc(6, 9, 2))]
+
+
+@both_entry_points
+def test_check_with_no_items_is_recorded_as_succeeded(db_session, monkeypatch, run_all):
+    _freeze_clock(monkeypatch, _utc(6, 9), _utc(6, 9))
+
+    with patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)):
+        run_all()
+
+    assert _runs(db_session) == [("succeeded", _utc(6, 9), _utc(6, 9))]
+    assert _counts(db_session) == [(0, 0, 0, 0)]
+
+
+# Listing the items fails, as with a locked database: an error that ends the whole run.
+LIST_ITEMS_FAILS = OperationalError("SELECT items.id", {}, Exception("database is locked"))
+
+
+def test_daily_job_that_an_error_ends_is_recorded_as_failed(db_session, three_items, monkeypatch):
+    _freeze_clock(monkeypatch, _utc(6, 9), _utc(6, 9, 1))
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch.object(Session, "scalars", side_effect=LIST_ITEMS_FAILS),
+        pytest.raises(OperationalError),  # raised to APScheduler, which logs it
+    ):
+        _run_daily_job()
+
+    assert _runs(db_session) == [("failed", _utc(6, 9), _utc(6, 9, 1))]
+    assert _counts(db_session) == [(0, 0, 0, 0)]  # recorded however the run ends
+
+
+def test_check_all_run_that_an_error_ends_is_recorded_as_failed(
+    db_session, three_items, monkeypatch, caplog
+):
+    _freeze_clock(monkeypatch, _utc(6, 9), _utc(6, 9, 1))
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch.object(Session, "scalars", side_effect=LIST_ITEMS_FAILS),
+        caplog.at_level(logging.ERROR, logger="hunter_bargain.services.scheduler"),
+    ):
+        _run_check_all()
+
+    assert _messages(caplog, logging.ERROR) == ["Price check of all items failed"]
+    assert _runs(db_session) == [("failed", _utc(6, 9), _utc(6, 9, 1))]
+    assert _counts(db_session) == [(0, 0, 0, 0)]  # recorded however the run ends
+
+
+def test_scheduler_job_defaults_are_explicit():
+    """A run that starts up to 3 hours late still runs; APScheduler's own grace time is 1 s."""
+    assert scheduler_module.scheduler._job_defaults == {
+        "misfire_grace_time": 3 * 3600,
+        "coalesce": True,
+        "max_instances": 1,
+    }
+
+
+@pytest.fixture
+def jobs_at(db_session, monkeypatch):
+    """Return a function that runs start_scheduler at a frozen time and returns its jobs by id.
+
+    The daily job runs at 09:00 UTC, the check_runs records are the test database's, and the
+    scheduler is a fresh one, started paused so that none of its jobs runs.
+    """
+    monkeypatch.setattr(settings, "price_check_cron", "0 9 * * *")
+    monkeypatch.setattr(settings, "price_check_tz", "UTC")
+    monkeypatch.setattr(scheduler_module, "SessionLocal", _sessions(db_session))
+    fresh = BackgroundScheduler()
+    monkeypatch.setattr(fresh, "start", functools.partial(fresh.start, paused=True))
+    monkeypatch.setattr(scheduler_module, "scheduler", fresh)
+    monkeypatch.setattr(scheduler_module, "_started_at", None)  # start_scheduler sets it
+
+    def start(now: dt.datetime) -> dict:
+        _freeze_clock(monkeypatch, now)
+        start_scheduler()
+        return {job.id: job for job in fresh.get_jobs()}
+
+    yield start
+    if fresh.running:
+        fresh.shutdown(wait=False)
+
+
+def test_daily_run_missed_while_the_app_was_down_is_caught_up_once(db_session, jobs_at, caplog):
+    """The app was down at 09:00 on Oct 6 and starts at 10:00: one check of all items at 10:01."""
+    _add_run(db_session, "succeeded", _utc(5, 9), _utc(5, 9, 5))
+    now = _utc(6, 10)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        jobs = jobs_at(now)
+
+    assert sorted(jobs) == ["catch_up_price_check", "daily_price_check"]
+    catch_up = jobs["catch_up_price_check"]
+    assert catch_up.func is _scheduled_price_check
+    assert catch_up.next_run_time == now + dt.timedelta(minutes=1)
+    # A single run: its trigger has no run time after that one.
+    assert catch_up.trigger.get_next_fire_time(catch_up.next_run_time, _utc(31, 0)) is None
+    assert _messages(caplog, logging.WARNING) == [
+        "Missed the daily price check due at 2026-10-06 09:00:00+00:00 (the last successful"
+        " check of all items finished at 2026-10-05 09:05:00+00:00): a catch-up check of all"
+        " items runs at 2026-10-06 10:01:00+00:00."
+    ]
+
+
+def test_no_catch_up_when_the_last_success_is_after_the_last_daily_run_time(db_session, jobs_at):
+    """Oct 6's 09:00 run succeeded; at 08:59 on Oct 7 the next one is not due yet."""
+    _add_run(db_session, "succeeded", _utc(5, 9), _utc(5, 9, 5))
+    _add_run(db_session, "succeeded", _utc(6, 9), _utc(6, 9, 5))
+
+    assert sorted(jobs_at(_utc(7, 8, 59))) == ["daily_price_check"]
+
+
+def test_check_that_ran_over_the_daily_run_time_counts_for_that_run(db_session, jobs_at):
+    """A check-all run from 08:58 to 09:03 made the daily job skip 09:00 and checked every item.
+
+    Its finish time is compared, not its start time: no catch-up.
+    """
+    _add_run(db_session, "succeeded", _utc(6, 8, 58), _utc(6, 9, 3))
+
+    assert sorted(jobs_at(_utc(6, 12))) == ["daily_price_check"]
+
+
+@pytest.mark.parametrize("status", ["failed", "running"])
+def test_failed_or_unfinished_check_since_the_last_success_is_caught_up(
+    db_session, jobs_at, status
+):
+    """Oct 6's 09:00 run failed, or the app stopped during it: caught up at the next start."""
+    _add_run(db_session, "succeeded", _utc(5, 9), _utc(5, 9, 5))
+    _add_run(db_session, status, _utc(6, 9), _utc(6, 9, 1) if status == "failed" else None)
+
+    assert sorted(jobs_at(_utc(6, 12))) == ["catch_up_price_check", "daily_price_check"]
+
+
+@pytest.mark.parametrize("status", [None, "failed", "running"], ids=["no run", "failed", "running"])
+def test_no_catch_up_without_a_successful_check_on_record(db_session, jobs_at, caplog, status):
+    """A new database, or one just upgraded to check_runs: no check starts at the first start."""
+    if status is not None:
+        _add_run(db_session, status, _utc(5, 9), _utc(5, 9, 1) if status == "failed" else None)
+
+    with caplog.at_level(logging.INFO, logger="hunter_bargain.services.scheduler"):
+        jobs = jobs_at(_utc(6, 10))
+
+    assert sorted(jobs) == ["daily_price_check"]
+    assert "No successful price check of all items is recorded yet: nothing to catch up." in (
+        _messages(caplog, logging.INFO)
+    )
+
+
+@pytest.fixture
+def host_time_zone():
+    """Return a function that sets the process's local time zone (TZ) until the test ends."""
+    saved = os.environ.get("TZ")
+
+    def set_zone(zone: str) -> None:
+        os.environ["TZ"] = zone
+        time.tzset()
+
+    yield set_zone
+    if saved is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = saved
+    time.tzset()
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs time.tzset to set the local zone")
+@pytest.mark.parametrize(
+    ("zone", "finished_at", "now", "caught_up"),
+    [
+        # Taken as local time, 09:05 UTC on Oct 5 would be 03:35 UTC, before that day's run.
+        ("Asia/Kolkata", _utc(5, 9, 5), _utc(6, 8), False),
+        # Taken as local time, 08:59 UTC on Oct 6 would be 13:59 UTC, after that day's run.
+        ("America/Chicago", _utc(6, 8, 59), _utc(6, 12), True),
+    ],
+    ids=["Asia/Kolkata", "America/Chicago"],
+)
+def test_run_times_read_back_from_sqlite_are_taken_as_utc(
+    db_session, jobs_at, host_time_zone, zone, finished_at, now, caught_up
+):
+    """SQLite returns the stored UTC times without a time zone, whatever the host's zone is."""
+    host_time_zone(zone)
+    _add_run(db_session, "succeeded", finished_at - dt.timedelta(minutes=5), finished_at)
+    assert db_session.scalar(select(CheckRun.finished_at)).tzinfo is None  # as SQLite returns it
+
+    jobs = jobs_at(now)
+
+    assert ("catch_up_price_check" in jobs) is caught_up
+
+
+# #24: each check of all items records what it did when it ends: the items whose check ran to the
+# end, the engine searches that worked and those that failed, and the alerts sent.
+
+# What run_price_check returns when SerpAPI refuses both engines' searches.
+QUOTA_ERRORS = [
+    f"{engine}: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run"
+    " out of searches."
+    for engine in ("google_shopping", "bing_shopping")
+]
+
+
+@both_entry_points
+def test_run_records_its_counts_when_it_ends(db_session, three_items, run_all):
+    """The first item's check searched both engines and sent an alert, the second one's check
+    failed, and SerpAPI refused both searches of the third: 2 items, 2 searches, 2 engine errors
+    and 1 alert. While the run lasts, its counts are not known yet."""
+    first, second, third = three_items
+    during_the_run: list[tuple[object, ...]] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        if item.id == first:
+            with _sessions(db_session)() as other:
+                during_the_run.extend(tuple(row) for row in other.execute(select(*COUNTS)))
+            return _empty_result(item).model_copy(update={"searches_used": 2, "alert_sent": True})
+        if item.id == second:
+            raise RuntimeError("database is locked")
+        return _empty_result(item).model_copy(update={"engine_errors": QUOTA_ERRORS})
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+    ):
+        run_all()
+
+    assert during_the_run == [(None, None, None, None)]
+    assert _counts(db_session) == [(2, 2, 2, 1)]
+    assert [status for status, _, _ in _runs(db_session)] == ["succeeded"]
+
+
+def test_serpapi_error_response_is_recorded_as_an_engine_error(
+    db_session, stub_serpapi, monkeypatch
+):
+    """The real check of an item, its searches answered by the local stub SerpAPI: Google Shopping
+    finds it at $9.99, under its $10 target, and SerpAPI answers Bing Shopping's search with its
+    documented error (HTTP 200, search status Error)."""
+    monkeypatch.setattr(settings, "serpapi_key", SecretStr("test-key"))
+    stub_serpapi.bodies["bing_shopping"] = json.dumps(SEARCH_ERROR_BODY)
+    db_session.add(Item(name="Widget", notify_email="a@x.com", target_price=10.0))
+    db_session.commit()
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.searcher.send_price_alert", return_value=True) as send,
+    ):
+        _run_daily_job()
+
+    send.assert_called_once()
+    assert _counts(db_session) == [(1, 1, 1, 1)]

@@ -54,6 +54,24 @@ def test_app_starts_with_env_file_copied_from_env_example(tmp_path):
     assert (tmp_path / "data" / "hunter_bargain.db").is_file()
 
 
+def test_env_example_holds_no_credentials_and_sends_alerts_to_mailpit(monkeypatch):
+    """A .env copied from .env.example is safe in the checkout (#16): no SerpAPI key, no SMTP
+    login, and alerts go to the dev profile's Mailpit service without TLS."""
+    settings_names = {name.upper() for name in Settings.model_fields}
+    for key in list(os.environ):
+        if key.upper() in settings_names:
+            monkeypatch.delenv(key)
+
+    settings = Settings(_env_file=REPO_ROOT / ".env.example")
+
+    assert settings.serpapi_key.get_secret_value() == ""
+    assert settings.smtp_user == ""
+    assert settings.smtp_password.get_secret_value() == ""
+    assert settings.smtp_host == "mailpit"
+    assert settings.smtp_port == 1025
+    assert settings.smtp_security == "none"
+
+
 def test_database_directory_is_created_for_an_absolute_sqlite_path(tmp_path):
     db_file = tmp_path / "nested" / "dir" / "hb.db"
 

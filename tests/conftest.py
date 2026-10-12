@@ -1,11 +1,14 @@
 """Shared test fixtures."""
 
+import ipaddress
 import json
+import logging
+import os
 import socket
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, override
 from unittest.mock import patch
@@ -13,12 +16,11 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from serpapi import SerpApiClient
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from hunter_bargain.config import settings
-from hunter_bargain.db import Base, get_db
+from hunter_bargain.config import Settings, settings
+from hunter_bargain.db import Base, create_db_engine, get_db
 from hunter_bargain.main import app
 
 # notify_email values the API tests post. Item create/update return 422 for an address outside
@@ -34,19 +36,89 @@ API_TEST_RECIPIENTS = [
 ]
 
 
+class NetworkBlockedError(RuntimeError):
+    """A test tried to connect to another machine."""
+
+
+def _on_this_machine(address: Any) -> bool:
+    """Whether a socket address is on this machine: a Unix socket's path or a loopback host."""
+    if not isinstance(address, tuple):
+        return True
+    host = address[0]
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test reaches the network: a connection to another machine raises NetworkBlockedError.
+
+    The socket is closed first, so the error is the test's only failure. The error is not an
+    OSError, so code that handles network errors doesn't mistake it for one and carry on.
+    """
+    connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def check(sock: socket.socket, address: Any) -> None:
+        if not _on_this_machine(address):
+            sock.close()
+            raise NetworkBlockedError(f"tests may connect only to loopback, not to {address!r}")
+
+    def guarded_connect(sock: socket.socket, address: Any) -> None:
+        check(sock, address)
+        connect(sock, address)
+
+    def guarded_connect_ex(sock: socket.socket, address: Any) -> int:
+        check(sock, address)
+        return connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+
+
+@pytest.fixture(autouse=True)
+def _default_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Every test starts from the default settings, whatever .env or the environment holds.
+
+    The app's `settings` read .env and the environment once, when this file imported the app.
+    This sets each of them back to its default and removes the environment's settings, so a
+    `Settings(_env_file=None)` a test builds gets the defaults too. A test changes a setting
+    with monkeypatch.
+
+    main.py also set the log levels from LOG_LEVEL then (configure_logging): the root logger
+    and urllib3 get the levels the default LOG_LEVEL gives them, and their own levels back after
+    the test.
+    """
+    names = Settings.model_fields
+    for key in list(os.environ):
+        if key.lower() in names:
+            monkeypatch.delenv(key)
+    defaults = Settings(_env_file=None)
+    for name in names:
+        monkeypatch.setattr(settings, name, getattr(defaults, name))
+
+    root, urllib3 = logging.getLogger(), logging.getLogger("urllib3")
+    saved = root.level, urllib3.level
+    level = getattr(logging, defaults.log_level.upper())
+    root.setLevel(level)
+    urllib3.setLevel(max(level, logging.WARNING))
+    yield
+    root.setLevel(saved[0])
+    urllib3.setLevel(saved[1])
+
+
 @pytest.fixture
 def db_session():
     """In-memory SQLite database session for tests.
 
-    Uses StaticPool so that all threads share the same in-memory database
-    connection — required because FastAPI's TestClient dispatches requests
-    in a worker thread via anyio.
+    The app's engine settings, so foreign keys are enforced as in production. Uses StaticPool
+    so that all threads share the same in-memory database connection — required because
+    FastAPI's TestClient dispatches requests in a worker thread via anyio.
     """
-    engine = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+    engine = create_db_engine("sqlite:///:memory:", poolclass=StaticPool)
     Base.metadata.create_all(bind=engine)
     test_session = sessionmaker(bind=engine, autocommit=False, autoflush=False)
     session = test_session()
@@ -55,6 +127,9 @@ def db_session():
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)
+        # Closes the pool's one connection; otherwise it is left to the garbage collector, and
+        # Python 3.13+ warns of an unclosed database (an error under filterwarnings).
+        engine.dispose()
 
 
 @pytest.fixture
@@ -75,17 +150,16 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch):
         finally:
             pass
 
-    app.dependency_overrides[get_db] = _override_get_db
-
     with ExitStack() as stack:
+        # Cleared however the fixture ends, a failed startup included.
+        app.dependency_overrides[get_db] = _override_get_db
+        stack.callback(app.dependency_overrides.clear)
         stack.enter_context(patch("hunter_bargain.main.init_db"))
         stack.enter_context(patch("hunter_bargain.main.start_scheduler"))
         stack.enter_context(patch("hunter_bargain.main.stop_scheduler"))
         client = TestClient(app)
         stack.enter_context(client)
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # A shopping_results row with fields both engines' documented rows have; a row needs a USD price
@@ -95,13 +169,17 @@ WIDGET_ROW = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
 
 @dataclass
 class StubSerpApi:
-    """A local stand-in for serpapi.com: every search gets this status and body."""
+    """A local stand-in for serpapi.com: every search gets this status and body.
+
+    A search whose engine parameter (e.g. google_shopping) is a key of `bodies` gets that body.
+    """
 
     url: str
     queries: list[dict[str, list[str]]]
     status: int = 200
     body: str = json.dumps({"shopping_results": [WIDGET_ROW]})
     content_type: str = "application/json"
+    bodies: dict[str, str] = field(default_factory=dict)
 
 
 def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
@@ -135,8 +213,9 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
     class Handler(BaseHTTPRequestHandler):
         @override
         def do_GET(self) -> None:
-            stub.queries.append(parse_qs(urlsplit(self.path).query))
-            body = stub.body.encode()
+            query = parse_qs(urlsplit(self.path).query)
+            stub.queries.append(query)
+            body = stub.bodies.get(query.get("engine", [""])[0], stub.body).encode()
             self.send_response(stub.status)
             self.send_header("Content-Type", stub.content_type)
             self.send_header("Content-Length", str(len(body)))

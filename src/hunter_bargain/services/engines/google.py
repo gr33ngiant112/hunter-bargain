@@ -12,6 +12,7 @@ from hunter_bargain.services.engines.base import (
     fetch_serpapi,
     is_installment_offer,
     is_usd_price,
+    parse_usd_amount,
     usable_price,
 )
 
@@ -62,7 +63,7 @@ class GoogleShoppingEngine(SearchEngine):
             price = item.get("extracted_price")
             if price is None:
                 # Try parsing the price string
-                price = _parse_price(price_str)
+                price = parse_usd_amount(price_str)
             # A bad row is skipped on its own; the other rows still count.
             price = usable_price(price)
             if price is None:
@@ -76,6 +77,8 @@ class GoogleShoppingEngine(SearchEngine):
 
             raw_ext = item.get("extensions")
             extensions = tuple(raw_ext) if raw_ext else None
+            # Set on a second-hand offer, e.g. "used" or "refurbished": any value counts (#3).
+            condition = str(item.get("second_hand_condition") or "").strip() or None
             results.append(
                 SearchResult(
                     title=title,
@@ -86,6 +89,7 @@ class GoogleShoppingEngine(SearchEngine):
                     url=item.get("product_link"),
                     extensions=extensions,
                     merchant=item.get("source") or None,
+                    condition=condition,
                 )
             )
 
@@ -93,15 +97,3 @@ class GoogleShoppingEngine(SearchEngine):
         results.sort(key=lambda r: r.price)
         logger.info("Google Shopping: found %d results for %r", len(results), query)
         return results
-
-
-def _parse_price(price_str: str) -> float | None:
-    """Extract a numeric price from a string like '$1,299.00'."""
-    if not price_str:
-        return None
-    # Strip currency symbols and commas
-    cleaned = price_str.replace("$", "").replace(",", "").strip()
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None

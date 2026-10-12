@@ -32,23 +32,37 @@ Be respectful, constructive, and kind. That's it. No 47-page document needed.
 ### Prerequisites
 
 - Python 3.12+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
 - Docker & Docker Compose (for containerized runs)
-- A [SerpAPI](https://serpapi.com/) key (free tier works for development)
+- No API key for development: the tests use fakes and recorded SerpAPI responses. A
+  [SerpAPI](https://serpapi.com/) key is needed only to run real searches.
 
 ### Install
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install -e ".[dev]"
+uv sync --locked --extra dev   # .venv with the versions in uv.lock, dev tools included
+source .venv/bin/activate      # or .venv\Scripts\activate on Windows
 ```
+
+`uv.lock` pins every dependency, and the Docker image and CI install from it. Change
+dependencies with `uv add` or `uv remove` (or edit `pyproject.toml` and run `uv lock`), upgrade
+one with `uv lock --upgrade-package NAME`, and commit `uv.lock` with `pyproject.toml`: CI fails
+when the lock is out of date. Another CI job runs the tests on the lowest versions
+`pyproject.toml` allows, so raise a floor when the code needs a newer version.
 
 ### Configure
 
+The tests need no `.env`. To run the app, copy the example. Its values are for development: no
+credentials, and `docker compose --profile dev up` sends alerts to Mailpit (README "Local
+Development"):
+
 ```bash
 cp .env.example .env
-# Edit .env with your API keys and SMTP credentials
 ```
+
+Keep real API keys and SMTP credentials out of the checkout, in the file `HB_ENV_FILE` names
+(README "Deployment"): anything run in the checkout, tests and coding agents included, loads its
+`.env`.
 
 ### Run Tests
 
@@ -56,11 +70,33 @@ cp .env.example .env
 pytest -v
 ```
 
+CI runs its checks in Docker, in the Dockerfile's `test` stage: lint, mypy, the tests and the
+migration check. It also runs the tests in that stage on Python 3.13 and 3.14, and in the
+`test-lowest-direct` stage on the lowest versions `pyproject.toml` allows. To run a check as
+CI does:
+
+```bash
+docker build --target test -t hunter-bargain-test .
+docker run --rm hunter-bargain-test pytest -q --cov   # or: ruff check ., mypy
+```
+
 ### Lint & Format
 
 ```bash
 ruff check .
 ruff format .
+```
+
+### Pre-commit Hooks
+
+Ruff, mypy (on `src`), a YAML check and a private-key check run before every commit, and a check
+of the commit message after you write it, whichever editor or agent makes the commit. Install the
+hooks once per clone, inside the venv. A clone set up before the message check needs
+`pre-commit install` once more:
+
+```bash
+pre-commit install
+pre-commit run --all-files   # the whole tree, e.g. after changing the hooks
 ```
 
 ### Run Locally
@@ -86,6 +122,7 @@ We follow strict GitFlow:
 | `main` | Production-ready releases only |
 | `develop` | Integration branch for features |
 | `feature/<name>` | New features (branch from `develop`) |
+| `fix/<name>`, `chore/<name>`, `ci/<name>` | Bug fixes, maintenance and CI changes (branch from `develop`) |
 | `release/<version>` | Release stabilization |
 | `hotfix/<name>` | Urgent production fixes |
 
@@ -97,26 +134,46 @@ git pull origin develop
 git checkout -b feature/my-awesome-feature
 ```
 
+A release fast-forwards `main` to `develop`, tags it `vX.Y.Z` and publishes a GitHub release
+from that version's `CHANGELOG.md` section.
+
+### Schema Changes
+
+The app migrates its database at startup with Alembic. After changing a model, generate a
+migration against a throwaway database, then review the new file in
+`src/hunter_bargain/migrations/versions/` (SQLite alters tables in batch mode):
+
+```bash
+export DATABASE_URL=sqlite:///scratch.db
+alembic upgrade head
+alembic revision --autogenerate -m "describe the change"
+```
+
 ### Commit Messages
 
 Write descriptive commit messages that explain *why*, not just *what*:
 
 ```
-feat: add Amazon search engine for broader price coverage
+fix: give each item its own session in the daily job
 
-The existing Google/Bing engines miss deals from Amazon marketplace.
-Adding a dedicated Amazon engine increases price coverage by ~40%.
+One shared session meant that an item deleted during the run, or one
+database error, ended the run for every item after it.
 ```
 
-Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
+The first line is `type: summary`, with an optional scope (`fix(cli): ...`) and `!` for a
+breaking change (`feat!: ...`). Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`.
+The commit-msg hook checks this, and CI checks every commit a pull request adds. Git's own merge,
+revert, reapply, `fixup!`, `squash!` and `amend!` messages pass.
 
 ## Pull Request Process
 
 1. Ensure all tests pass: `pytest -v`
 2. Ensure lint is clean: `ruff check . && ruff format --check .`
 3. Update `CHANGELOG.md` with your changes under `[Unreleased]`
-4. Create a PR targeting `develop` (never `main` directly)
-5. Fill in the PR template with a clear description
+4. Create a PR targeting `develop` (never `main` directly). CI skips draft PRs, so run steps 1
+   and 2 locally before you mark a draft ready for review.
+5. Describe what changed and why, link the issue (`Fixes #N`), and list the commands you ran with
+   their results
 6. Request review from a maintainer
 
 ### PR Requirements
@@ -141,19 +198,22 @@ Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`
 
 - **Minimal changes**: Impact as little code as possible
 - **Root causes**: Fix the actual problem, not symptoms
-- **No type suppression**: Never use `as any`, `# type: ignore`, `@ts-ignore`
+- **No type suppression**: Never use `# type: ignore`
 - **No empty catch blocks**: Always handle or log errors
-- **Zero dummy data**: Never hardcode fake responses or placeholder values
+- **No fake data shown as real**: No placeholder values or invented responses in the app. Fakes and
+  recorded, key-scrubbed SerpAPI responses in tests are not dummy data.
 
 ### Testing
 
 - Use `pytest` with fixtures from `conftest.py`
-- Mock external calls (SerpAPI, SMTP) — never make real network calls in tests
+- Use fakes or recorded, key-scrubbed responses for external calls (SerpAPI, SMTP); never make
+  real network calls in tests
 - Test both happy paths and error cases
 
 ## Reporting Bugs
 
-Open an issue with:
+Report a security problem privately, as [SECURITY.md](SECURITY.md) describes, not in an issue.
+For any other bug, open an issue with:
 
 1. **What happened** (actual behavior)
 2. **What you expected** (expected behavior)

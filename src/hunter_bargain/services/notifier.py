@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from hunter_bargain.config import settings
 from hunter_bargain.models import Item
+from hunter_bargain.schemas import PriceLow
 from hunter_bargain.services.engines.base import SearchResult
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,15 @@ def _source_label(result: SearchResult) -> str:
     return f"{merchant} via {result.source}" if merchant else result.source
 
 
-def _build_html_body(item: Item, result: SearchResult) -> str:
+def _price_lows(
+    low_90_days: PriceLow | None, all_time_low: PriceLow | None
+) -> list[tuple[str, str]]:
+    """The lows to show, as (label, value) pairs, e.g. ("All-time low", "$9.99 on 2026-10-01")."""
+    lows = [("Lowest in 90 days", low_90_days), ("All-time low", all_time_low)]
+    return [(label, f"${low.price:.2f} on {low.checked_at:%Y-%m-%d}") for label, low in lows if low]
+
+
+def _build_html_body(item: Item, result: SearchResult, lows: list[tuple[str, str]]) -> str:
     """Build the HTML email body for a price alert.
 
     The item name comes from an API caller and the title, currency, merchant and URL from a
@@ -64,6 +73,12 @@ def _build_html_body(item: Item, result: SearchResult) -> str:
     price = _escape(f"${result.price:.2f} {result.currency}")
     target = _escape(f"${item.target_price:.2f}")
     source = _escape(_source_label(result))
+    cell = "padding: 8px; border: 1px solid #ddd;"
+    lows_html = "".join(
+        f'\n            <tr><td style="{cell} font-weight: bold;">{_escape(label)}</td>'
+        f'<td style="{cell}">{_escape(value)}</td></tr>'
+        for label, value in lows
+    )
 
     link_html = ""
     url = _link_url(result.url)
@@ -97,7 +112,7 @@ def _build_html_body(item: Item, result: SearchResult) -> str:
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Target</td>
                 <td style="padding: 8px; border: 1px solid #ddd;">{target}</td>
-            </tr>
+            </tr>{lows_html}
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Source</td>
                 <td style="padding: 8px; border: 1px solid #ddd;">{source}</td>
@@ -113,13 +128,23 @@ def _build_html_body(item: Item, result: SearchResult) -> str:
     """
 
 
-def send_price_alert(item: Item, result: SearchResult) -> bool:
+def send_price_alert(
+    item: Item,
+    result: SearchResult,
+    low_90_days: PriceLow | None = None,
+    all_time_low: PriceLow | None = None,
+) -> bool:
     """Send a price alert email for an item that hit its target.
 
+    The email also shows the item's lowest recorded price in the last 90 days and its all-time
+    low, when they are given (#31).
     Returns True if the email was sent successfully, False otherwise.
     Fails gracefully — never raises to the caller.
     """
-    if not settings.smtp_user or not settings.smtp_password:
+    # SMTP_SECURITY=none is for a local test server such as Mailpit: no TLS and no login, so it
+    # needs no credentials. Every other value takes the TLS path.
+    tls = settings.smtp_security != "none"
+    if tls and (not settings.smtp_user or not settings.smtp_password):
         logger.warning("SMTP not configured — skipping email notification for item %d", item.id)
         return False
 
@@ -139,20 +164,23 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
         msg["To"] = item.notify_email
 
         # Plain text fallback; like the HTML part, it shows the link only for an http(s) URL.
+        lows = _price_lows(low_90_days, all_time_low)
         plain = (
             f"Price Alert: {item.name}\n"
             f"Price: ${result.price:.2f} {result.currency}\n"
             f"Target: ${item.target_price:.2f}\n"
-            f"Source: {_source_label(result)}\n"
+            + "".join(f"{label}: {value}\n" for label, value in lows)
+            + f"Source: {_source_label(result)}\n"
             f"Link: {_link_url(result.url) or 'N/A'}\n"
         )
         msg.attach(MIMEText(plain, "plain"))
-        msg.attach(MIMEText(_build_html_body(item, result), "html"))
+        msg.attach(MIMEText(_build_html_body(item, result, lows), "html"))
 
         # Verify the server certificate and hostname on both paths: without a context,
         # starttls() skips verification.
         context = ssl.create_default_context()
-        implicit_tls = settings.smtp_port == 465  # SMTPS: TLS from the first byte
+        implicit_tls = tls and settings.smtp_port == 465  # SMTPS: TLS from the first byte
+        connection: smtplib.SMTP  # SMTP_SSL is a subclass
         if implicit_tls:
             connection = smtplib.SMTP_SSL(
                 settings.smtp_host,
@@ -166,9 +194,11 @@ def send_price_alert(item: Item, result: SearchResult) -> bool:
             )
 
         with connection as server:
-            if not implicit_tls:
-                server.starttls(context=context)
-            server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
+            # Without TLS there is no login either: the password never crosses a plain connection.
+            if tls:
+                if not implicit_tls:
+                    server.starttls(context=context)
+                server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
             server.send_message(msg)
 
         logger.info("Price alert sent to %s for item %d", item.notify_email, item.id)

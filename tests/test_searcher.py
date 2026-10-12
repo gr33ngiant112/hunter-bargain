@@ -1,7 +1,9 @@
 """Tests for the search engine implementations and orchestrator."""
 
+import datetime as dt
 import json
 import logging
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,10 +12,11 @@ from requests.adapters import HTTPAdapter
 
 from hunter_bargain.config import settings as app_settings
 from hunter_bargain.models import Item, PriceRecord
-from hunter_bargain.services.engines import base, bing, google
+from hunter_bargain.schemas import PriceCheckResult
+from hunter_bargain.services.engines import base
 from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.engines.bing import BingShoppingEngine
-from hunter_bargain.services.engines.google import GoogleShoppingEngine, _parse_price
+from hunter_bargain.services.engines.google import GoogleShoppingEngine
 from hunter_bargain.services.searcher import (
     _build_query,
     _has_accessory_extension,
@@ -74,6 +77,10 @@ GOOGLE_LIRA = {
     "extracted_price": 28782.94,
     "alternative_price": {"price": "€608", "extracted_price": 608, "currency": "€"},
 }
+# The same page's JSON structure overview documents second_hand_condition as "Description of
+# condition when the product is second hand (Ex: 'used', or 'refurbished')". No example row on the
+# page carries one, so the tests add it to GOOGLE_FOLGERS.
+SECOND_HAND_CONDITIONS = ["used", "refurbished"]
 
 # Bing Shopping, https://serpapi.com/bing-shopping-api: "Example results for q: jacket", rows 1
 # and 2. link is a bing.com/ck/a redirect; external_link is the seller's own page.
@@ -150,8 +157,14 @@ BAD_EXTRACTED_PRICES = [
     pytest.param(-5.88, id="negative"),
     pytest.param(10**400, id="int-too-large-for-float"),
 ]
-# Dollar price strings whose parsed amount is not usable, for rows without extracted_price.
-BAD_PRICE_STRINGS = [pytest.param("$0.00", id="zero"), pytest.param("$1e999", id="infinity")]
+# Dollar price strings that give no usable amount, for rows without extracted_price: zero, and
+# strings that are not a plain dollar amount, which read as 1.299 and 1299.0 before #30.
+BAD_PRICE_STRINGS = [
+    pytest.param("$0.00", id="zero"),
+    pytest.param("$1e999", id="infinity"),
+    pytest.param("$1.299,00", id="comma-decimal"),
+    pytest.param("$12,99", id="comma-cents"),
+]
 
 # SerpAPI's documented error responses, https://serpapi.com/api-status-and-error-codes (fetched
 # 2026-10-05), with "..." parts of the examples left out.
@@ -190,9 +203,16 @@ def _without(row: dict, *fields: str) -> dict:
     return {key: value for key, value in row.items() if key not in fields}
 
 
-def _serve(fetch: MagicMock, *rows: dict) -> None:
-    """Make an engine's patched SerpAPI fetch return these shopping_results rows."""
-    fetch.return_value = {"shopping_results": list(rows)}
+class EngineSearches(NamedTuple):
+    """One engine's searches, answered by the local stub SerpAPI (stub_serpapi in conftest.py)."""
+
+    stub: Any
+    engine: str  # SerpAPI's engine parameter
+
+
+def _serve(searches: EngineSearches, *rows: dict) -> None:
+    """Make the stub SerpAPI answer the engine's searches with these shopping_results rows."""
+    searches.stub.bodies[searches.engine] = json.dumps({"shopping_results": list(rows)})
 
 
 def _skip_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -200,27 +220,19 @@ def _skip_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 @pytest.fixture
-def google_search():
-    """The Google Shopping engine's SerpAPI fetch, patched, with a fake key."""
-    with (
-        patch("hunter_bargain.services.engines.google.settings") as settings,
-        patch("hunter_bargain.services.engines.google.fetch_serpapi") as fetch,
-    ):
-        settings.serpapi_key = SecretStr("test-key")
-        _serve(fetch)
-        yield fetch
+def google_search(serpapi_key, stub_serpapi):
+    """Google Shopping searches through the real client, answered by the local stub SerpAPI."""
+    searches = EngineSearches(stub_serpapi, "google_shopping")
+    _serve(searches)
+    return searches
 
 
 @pytest.fixture
-def bing_search():
-    """The Bing Shopping engine's SerpAPI fetch, patched, with a fake key."""
-    with (
-        patch("hunter_bargain.services.engines.bing.settings") as settings,
-        patch("hunter_bargain.services.engines.bing.fetch_serpapi") as fetch,
-    ):
-        settings.serpapi_key = SecretStr("test-key")
-        _serve(fetch)
-        yield fetch
+def bing_search(serpapi_key, stub_serpapi):
+    """Bing Shopping searches through the real client, answered by the local stub SerpAPI."""
+    searches = EngineSearches(stub_serpapi, "bing_shopping")
+    _serve(searches)
+    return searches
 
 
 @pytest.fixture
@@ -231,7 +243,7 @@ def serpapi_key(monkeypatch):
 
 @pytest.fixture
 def engines(google_search, bing_search):
-    """Both real engines in the searcher's registry, each answering from its patched client."""
+    """Both real engines in the searcher's registry, their searches answered by the stub."""
     with patch(
         "hunter_bargain.services.searcher._ENGINES", [GoogleShoppingEngine(), BingShoppingEngine()]
     ):
@@ -254,30 +266,64 @@ def _tracked_item(db_session, name: str, target_price: float) -> Item:
 
 
 class TestParsePrice:
-    """Tests for the price string parser."""
+    """The price string parser both engines use for a row without extracted_price."""
 
     def test_standard_price(self):
-        assert _parse_price("$1,299.00") == 1299.00
+        assert base.parse_usd_amount("$1,299.00") == 1299.00
 
     def test_no_comma(self):
-        assert _parse_price("$29.99") == 29.99
+        assert base.parse_usd_amount("$29.99") == 29.99
 
     def test_empty_string(self):
-        assert _parse_price("") is None
+        assert base.parse_usd_amount("") is None
 
     def test_none(self):
-        assert _parse_price(None) is None
+        assert base.parse_usd_amount(None) is None
 
     def test_invalid(self):
-        assert _parse_price("free") is None
+        assert base.parse_usd_amount("free") is None
+
+    @pytest.mark.parametrize("price_str", ["$20.99/mo", "From $999"])
+    def test_monthly_or_from_price_is_not_a_number(self, price_str):
+        """The fallback parser gives no number for a monthly price or a "From" price (#35)."""
+        assert base.parse_usd_amount(price_str) is None
 
     @pytest.mark.parametrize(
-        "parse", [google._parse_price, bing._parse_price], ids=["google", "bing"]
+        ("price_str", "expected"),
+        [
+            ("$1,299", 1299.0),
+            ("$1299", 1299.0),
+            ("$1,234,567.89", 1234567.89),
+            ("$100,000", 100000.0),
+            ("$29.9", 29.9),
+            ("$0.99", 0.99),
+            (" $5.88 ", 5.88),
+        ],
     )
-    @pytest.mark.parametrize("price_str", ["$20.99/mo", "From $999"])
-    def test_monthly_or_from_price_is_not_a_number(self, parse, price_str):
-        """The fallback parser gives no number for a monthly price or a "From" price (#35)."""
-        assert parse(price_str) is None
+    def test_plain_dollar_amount(self, price_str, expected):
+        assert base.parse_usd_amount(price_str) == expected
+
+    @pytest.mark.parametrize(
+        "price_str",
+        [
+            "1.299,00",  # a comma decimal, read as 1.299 before #30
+            "$1.299,00",
+            "$12,99",  # read as 1299.0 before #30
+            "$1,29",
+            "$1.299",  # 1,299 dollars with a dot between thousands, or 1.299 dollars
+            "$1,2999.00",  # a thousands group of four digits, read as 12999.0 before #30
+            "$0,299",  # a comma decimal again: thousands groups can't follow a 0, read as 299.0
+            "£1,299",
+            "US$1,299.00",
+            "$1e999",
+            "$\u0661\u0662\u0663",  # Arabic-Indic digits, which float() would read as 123
+            "$",
+            "$.99",
+        ],
+    )
+    def test_not_a_plain_dollar_amount(self, price_str):
+        """Any other string gives None, so the row is skipped rather than priced wrong (#30)."""
+        assert base.parse_usd_amount(price_str) is None
 
 
 class TestPriceChecks:
@@ -365,7 +411,7 @@ class TestBuildQuery:
 
 
 class TestGoogleShoppingEngine:
-    """Tests for the Google Shopping engine (mocked SerpAPI calls)."""
+    """Tests for the Google Shopping engine, its searches answered by the local stub SerpAPI."""
 
     @patch("hunter_bargain.services.engines.google.settings")
     def test_missing_api_key_is_an_engine_error(self, mock_settings):
@@ -446,6 +492,19 @@ class TestGoogleShoppingEngine:
 
         assert (result.price, result.currency) == (5.88, "USD")
 
+    @pytest.mark.parametrize("condition", SECOND_HAND_CONDITIONS)
+    def test_second_hand_condition_is_the_result_condition(self, google_search, condition):
+        """A row's second_hand_condition is the result's condition; without one, None (#3)."""
+        row = {**GOOGLE_FOLGERS, "second_hand_condition": condition}
+        _serve(google_search, row, GOOGLE_BUSTELO)
+
+        results = GoogleShoppingEngine().search("coffee")
+
+        assert [(r.title, r.condition) for r in results] == [
+            ("Bustelo Coffee Espresso", None),
+            ("Folgers Classic Roast Ground Coffee", condition),
+        ]
+
     @pytest.mark.parametrize("extracted_price", BAD_EXTRACTED_PRICES)
     def test_unusable_extracted_price_skips_only_that_row(
         self, google_search, caplog, extracted_price
@@ -481,7 +540,7 @@ class TestGoogleShoppingEngine:
 
 
 class TestBingShoppingEngine:
-    """Tests for the Bing Shopping engine (mocked SerpAPI calls)."""
+    """Tests for the Bing Shopping engine, its searches answered by the local stub SerpAPI."""
 
     def test_url_is_external_link_and_merchant_is_seller(self, bing_search):
         """The seller's own page, not the bing.com/ck redirect in link (#34)."""
@@ -634,6 +693,7 @@ class TestSerpApiResponses:
 
         assert result.engine_errors == [f"{engine.name}: {expected}"]
         assert (result.results_count, result.lowest_price) == (0, None)
+        assert result.searches_used == 0  # #24: a failed search is an engine error instead
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
         assert errors == [f"Engine {engine.name} failed for item {item.id}: {expected!r}"]
 
@@ -687,6 +747,7 @@ class TestSerpApiResponses:
             result = run_price_check(item=item, db=db_session)
 
         assert (result.results_count, result.lowest_price, result.engine_errors) == (0, None, [])
+        assert result.searches_used == 1  # #24: the search worked, and found nothing
         assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert (
             f"SerpAPI {engine.name} search for 'Widget' found no results:"
@@ -788,6 +849,122 @@ class TestIsRelevant:
             extensions=("Smartphone", "5G", "OLED"),
         )
         assert _is_relevant(result, "Google Pixel 10 Pro XL", target_price=1000.0) is True
+
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("Apple iPhone 15 Pro 256GB Natural Titanium", True),
+            ("Apple iPhone 15 Pro 256 GB Natural Titanium", True),
+            ("Apple iPhone 15 Pro 128GB Natural Titanium", False),
+            ("Apple iPhone 15 Pro 512GB Natural Titanium", False),
+            ("Apple iPhone 15 Pro Natural Titanium", False),
+        ],
+        ids=["256GB", "256-space-GB", "128GB", "512GB", "no-storage"],
+    )
+    def test_keyword_is_a_required_term(self, title, expected):
+        """Keywords are required terms (#3): "256GB" or "256 GB" is the 256GB model."""
+        result = SearchResult(title=title, price=999.0, currency="USD", source="test")
+        # The name alone matches every one of these titles: the keyword decides.
+        assert _is_relevant(result, "iPhone 15 Pro") is True
+        assert _is_relevant(result, "iPhone 15 Pro", keywords="256GB") is expected
+
+    @pytest.mark.parametrize(
+        ("keywords", "expected"),
+        [
+            ("256GB, unlocked", True),
+            ("unlocked,256GB", True),
+            ("256GB, unlocked, blue titanium", False),
+            ("256GB, verizon", False),
+        ],
+    )
+    def test_every_comma_separated_keyword_term_is_required(self, keywords, expected):
+        result = SearchResult(
+            title="Apple iPhone 15 Pro 256GB Unlocked - Natural Titanium",
+            price=999.0,
+            currency="USD",
+            source="test",
+        )
+        assert _is_relevant(result, "iPhone 15 Pro", keywords=keywords) is expected
+
+    @pytest.mark.parametrize(
+        ("title", "expected"),
+        [
+            ("Apple iPhone 15 Pro 256GB - Natural Titanium", True),
+            ("Apple iPhone 15 Pro 256GB - Natural Titanium (Renewed)", False),
+            ("Apple iPhone 15 Pro 256GB Refurbished", False),
+            ("Restored Apple iPhone 15 Pro 256GB", False),
+            ("Apple iPhone 15 Pro 256GB Pre-Owned", False),
+            ("Used Apple iPhone 15 Pro 256GB", False),
+            ("Apple iPhone 15 Pro 256GB - Open Box", False),
+            ("Apple iPhone 15 Pro 256GB For Parts or Not Working", False),
+        ],
+        ids=["new", "renewed", "refurbished", "restored", "pre-owned", "used", "open-box", "parts"],
+    )
+    def test_second_hand_title_is_rejected(self, title, expected):
+        """Renewed, refurbished and other second-hand listings are rejected by default (#3)."""
+        result = SearchResult(title=title, price=700.0, currency="USD", source="test")
+        assert _is_relevant(result, "iPhone 15 Pro") is expected
+
+    @pytest.mark.parametrize(
+        ("condition", "expected"), [(None, True), *((c, False) for c in SECOND_HAND_CONDITIONS)]
+    )
+    def test_second_hand_condition_is_rejected(self, condition, expected):
+        """A Google row's second_hand_condition rejects it, whatever its title says (#3)."""
+        result = SearchResult(
+            title="Folgers Classic Roast Ground Coffee",
+            price=5.88,
+            currency="USD",
+            source="google_shopping",
+            condition=condition,
+        )
+        assert _is_relevant(result, "Folgers Classic Roast Ground Coffee") is expected
+
+    @pytest.mark.parametrize("item_name", ["The", "!!!", "A"])
+    @pytest.mark.parametrize(
+        "title", ["Phone Case", "Sony WH-1000XM5 Wireless Noise Canceling Headphones"]
+    )
+    def test_name_without_a_matchable_token_rejects(self, item_name, title):
+        """Such a name used to accept every listing, accessories included (#3)."""
+        result = SearchResult(title=title, price=50.0, currency="USD", source="test")
+        assert _is_relevant(result, item_name) is False
+
+    @pytest.mark.parametrize(
+        ("item_name", "title"),
+        [
+            # Titles written for this test. The item's model code and another of the same shape:
+            ("Sony WH-1000XM5", "Sony WH-1000XM4 and WH-1000XM5 Headphones Bundle"),
+            ("Dyson V15 Detect", "Dyson V11 and V15 Detect Cordless Vacuum Bundle"),
+            # The item's number, but not after the word it follows in the item's name:
+            ("PlayStation 5", "PlayStation 4 Slim 1TB Console with 5 Games"),
+        ],
+    )
+    def test_title_naming_another_model_is_rejected(self, item_name, title):
+        """Another model's identifier rejects a title that also has the item's own (#3 step 2)."""
+        result = SearchResult(title=title, price=300.0, currency="USD", source="test")
+        assert _is_relevant(result, item_name) is False
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            # Titles written for this test: one screen size, three ways to write the inches.
+            'Samsung 27" Odyssey G5 Gaming Monitor',
+            "Samsung 27-Inch Odyssey G5 Gaming Monitor",
+            "Samsung 27 in. Odyssey G5 Gaming Monitor",
+        ],
+        ids=["inch-mark", "hyphen-inch", "in"],
+    )
+    def test_screen_size_matches_however_the_title_writes_inches(self, title):
+        """The name's "27 inch" is a required token, and '27"' in a title is the same size."""
+        result = SearchResult(title=title, price=250.0, currency="USD", source="test")
+        assert _is_relevant(result, "Samsung Odyssey G5 27 inch") is True
+
+    def test_bracketed_text_between_a_word_and_its_number_is_skipped(self):
+        """'(Slim)' between "PlayStation" and "5" does not move the 5 (a title written for this
+        test); the bracket is left out of the check that the 5 follows "PlayStation"."""
+        result = SearchResult(
+            title="Sony PlayStation (Slim) 5 Console", price=450.0, currency="USD", source="test"
+        )
+        assert _is_relevant(result, "PlayStation 5") is True
 
 
 class TestHasAccessoryExtension:
@@ -950,6 +1127,32 @@ class TestRunPriceCheck:
         assert result.results_count == 1
         assert result.lowest_price == 999.0
 
+    def test_item_keywords_reach_the_relevance_check(self, db_session, send_alert):
+        """The cheaper 128GB listing is not the lowest price of an item with keyword 256GB (#3)."""
+        engine = MagicMock()
+        engine.name = "mock"
+        engine.search.return_value = [
+            SearchResult(
+                title="Apple iPhone 15 Pro 128GB", price=700.0, currency="USD", source="mock"
+            ),
+            SearchResult(
+                title="Apple iPhone 15 Pro 256GB", price=850.0, currency="USD", source="mock"
+            ),
+        ]
+        item = Item(
+            name="iPhone 15 Pro", keywords="256GB", notify_email="n@x.com", target_price=900.0
+        )
+        db_session.add(item)
+        db_session.commit()
+        db_session.refresh(item)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert (result.results_count, result.lowest_price) == (1, 850.0)
+        assert send_alert.call_args.kwargs["result"].title == "Apple iPhone 15 Pro 256GB"
+        assert [r.title for r in db_session.query(PriceRecord)] == ["Apple iPhone 15 Pro 256GB"]
+
     def test_missing_key_is_an_engine_error_for_each_engine(
         self, db_session, send_alert, monkeypatch, caplog
     ):
@@ -965,6 +1168,7 @@ class TestRunPriceCheck:
             "google_shopping: SERPAPI_KEY is not set",
             "bing_shopping: SERPAPI_KEY is not set",
         ]
+        assert result.searches_used == 0
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
         assert errors == [
             f"Engine google_shopping failed for item {item.id}: 'SERPAPI_KEY is not set'",
@@ -993,6 +1197,7 @@ class TestRunPriceCheck:
 
         assert result.engine_errors == ["broken: unexpected error (TypeError)"]
         assert (result.lowest_price, result.lowest_source) == (45.0, "working")
+        assert result.searches_used == 1  # #24: the working engine's search only
         [record] = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert record.getMessage() == f"Engine broken failed for item {item.id}"
         assert record.exc_info is not None  # logged with its traceback
@@ -1020,6 +1225,23 @@ class TestDocumentedRowsThroughPriceCheck:
     ):
         _serve(engines[1], {**BING_IPHONE_13, "installments": BING_INSTALLMENTS})
         item = _tracked_item(db_session, "iPhone 13 128GB", target)
+
+        result = run_price_check(item=item, db=db_session)
+
+        send_alert.assert_not_called()
+        assert result.lowest_price is None
+        assert db_session.query(PriceRecord).count() == 0
+
+    @pytest.mark.parametrize("condition", SECOND_HAND_CONDITIONS)
+    def test_second_hand_row_is_never_the_alert_price(
+        self, engines, send_alert, db_session, condition
+    ):
+        """The title is the item's name, so only second_hand_condition can drop the row (#3).
+
+        Without it the same row is the alert price: see test_lowest_result_names_merchant_and_link.
+        """
+        _serve(engines[0], {**GOOGLE_FOLGERS, "second_hand_condition": condition})
+        item = _tracked_item(db_session, "Folgers Classic Roast Ground Coffee", 6.0)
 
         result = run_price_check(item=item, db=db_session)
 
@@ -1084,3 +1306,143 @@ class TestDocumentedRowsThroughPriceCheck:
         alerted = send_alert.call_args.kwargs["result"]
         assert (alerted.price, alerted.source, alerted.merchant, alerted.url) == expected
         assert {r.source for r in db_session.query(PriceRecord)} == {result.lowest_source}
+        assert result.searches_used == 2  # #24: both engines searched
+
+
+# #9: a price that stays on target is emailed once; after that, a new low or the cooldown.
+
+T0 = dt.datetime(2026, 10, 6, 9, 0, tzinfo=dt.UTC)
+
+
+def _check_at(
+    db_session, monkeypatch, item: Item, price: float, at: dt.datetime
+) -> PriceCheckResult:
+    """Check `item` at time `at`, with one engine that finds it at `price`."""
+    engine = MagicMock()
+    engine.name = "mock"
+    engine.search.return_value = [
+        SearchResult(title=f"{item.name} Bargain", price=price, currency="USD", source="mock")
+    ]
+    monkeypatch.setattr("hunter_bargain.services.searcher._now", lambda: at)
+    with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+        return run_price_check(item=item, db=db_session)
+
+
+def _alert_state(db_session, item: Item) -> tuple[float | None, dt.datetime | None]:
+    """The item's committed alert state: the rollback drops anything left uncommitted. SQLite
+    returns last_alerted_at without a time zone; it is stored in UTC."""
+    db_session.rollback()
+    alerted_at = item.last_alerted_at
+    return item.last_alert_price, alerted_at.replace(tzinfo=dt.UTC) if alerted_at else None
+
+
+class TestAlertDedup:
+    """Alert state on items: one email per deal, then only a new low or after the cooldown."""
+
+    @pytest.fixture(autouse=True)
+    def policy(self, monkeypatch, send_alert):
+        """The default policy (any new low; 7 days), and a send_price_alert that succeeds."""
+        monkeypatch.setattr(app_settings, "alert_min_drop_pct", 0.0)
+        monkeypatch.setattr(app_settings, "alert_cooldown_days", 7.0)
+        send_alert.return_value = True
+
+    def test_repeated_checks_at_an_unchanged_price_send_one_alert(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+
+        sent = [
+            _check_at(db_session, monkeypatch, item, 45.0, T0 + dt.timedelta(days=day)).alert_sent
+            for day in range(3)
+        ]
+
+        assert sent == [True, False, False]
+        assert send_alert.call_count == 1
+        assert _alert_state(db_session, item) == (45.0, T0)
+
+    def test_a_new_low_sends_a_new_alert(self, db_session, monkeypatch, send_alert):
+        """Higher prices, still on target, and a return to the last alert's price send nothing."""
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+        prices = [45.0, 44.99, 46.0, 44.99, 44.0]
+
+        sent = [
+            _check_at(
+                db_session, monkeypatch, item, price, T0 + dt.timedelta(hours=hour)
+            ).alert_sent
+            for hour, price in enumerate(prices)
+        ]
+
+        assert sent == [True, True, False, False, True]
+        assert [c.kwargs["result"].price for c in send_alert.call_args_list] == [45.0, 44.99, 44.0]
+        assert _alert_state(db_session, item) == (44.0, T0 + dt.timedelta(hours=4))
+
+    def test_after_the_cooldown_the_same_price_is_emailed_again(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+        cooldown = dt.timedelta(days=7)
+
+        sent = [
+            _check_at(db_session, monkeypatch, item, 45.0, at).alert_sent
+            for at in (T0, T0 + cooldown - dt.timedelta(seconds=1), T0 + cooldown)
+        ]
+
+        assert sent == [True, False, True]
+        assert send_alert.call_count == 2
+        assert _alert_state(db_session, item) == (45.0, T0 + cooldown)
+
+    def test_a_failed_send_leaves_the_state_alone_and_the_next_check_tries_again(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+        send_alert.return_value = False  # SMTP not configured, refused or failed
+
+        assert _check_at(db_session, monkeypatch, item, 45.0, T0).alert_sent is False
+        assert _alert_state(db_session, item) == (None, None)
+
+        send_alert.return_value = True
+        later = T0 + dt.timedelta(hours=1)
+        assert _check_at(db_session, monkeypatch, item, 45.0, later).alert_sent is True
+        assert send_alert.call_count == 2
+        assert _alert_state(db_session, item) == (45.0, later)
+
+    def test_price_above_target_sends_nothing_and_keeps_no_state(
+        self, db_session, monkeypatch, send_alert
+    ):
+        item = _tracked_item(db_session, "Tracked Widget", target_price=50.0)
+
+        assert _check_at(db_session, monkeypatch, item, 55.0, T0).alert_sent is False
+        send_alert.assert_not_called()
+        assert _alert_state(db_session, item) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("price", "alerted"),
+        [(90.01, False), (90.0, True), (80.0, True)],
+        ids=["less-than-10pct-lower", "exactly-10pct-lower", "20pct-lower"],
+    )
+    def test_alert_min_drop_pct_sets_how_much_lower_a_new_low_must_be(
+        self, db_session, monkeypatch, price, alerted
+    ):
+        monkeypatch.setattr(app_settings, "alert_min_drop_pct", 10.0)
+        item = _tracked_item(db_session, "Tracked Widget", target_price=100.0)
+        assert _check_at(db_session, monkeypatch, item, 100.0, T0).alert_sent is True
+
+        later = T0 + dt.timedelta(days=1)
+        assert _check_at(db_session, monkeypatch, item, price, later).alert_sent is alerted
+
+    @pytest.mark.parametrize(
+        ("last", "price", "alerted"),
+        [(1.00, 0.93, True), (1.00, 0.94, False), (1.05, 0.98, False)],
+        ids=["exactly-7pct-lower", "6pct-lower", "6.67pct-lower"],
+    )
+    def test_a_drop_of_exactly_alert_min_drop_pct_is_a_new_low(
+        self, db_session, monkeypatch, last, price, alerted
+    ):
+        """Thresholds that binary floating point cannot hold exactly: 1.00 less 7% is
+        0.9299999999999999 as a float, and 1.05 less 7% (0.9765) rounds up to 0.98 in cents."""
+        monkeypatch.setattr(app_settings, "alert_min_drop_pct", 7.0)
+        item = _tracked_item(db_session, "Tracked Widget", target_price=2.0)
+        assert _check_at(db_session, monkeypatch, item, last, T0).alert_sent is True
+
+        later = T0 + dt.timedelta(days=1)
+        assert _check_at(db_session, monkeypatch, item, price, later).alert_sent is alerted
