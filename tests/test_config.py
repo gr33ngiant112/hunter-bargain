@@ -114,3 +114,75 @@ def test_out_of_range_alert_policy_fails_validation(monkeypatch, name, value):
     with pytest.raises(ValidationError) as excinfo:
         Settings(_env_file=None)
     assert [error["loc"] for error in excinfo.value.errors()] == [(name.lower(),)]
+
+
+# #29: which merchants' prices may alert, and when a price is flagged "verify merchant".
+
+KELVIN_KMART = "Kmart"  # "Kmart" spelled with U+212A KELVIN SIGN, which lower-cases to "k"
+
+
+def test_merchant_lists_are_comma_separated_and_empty_by_default(monkeypatch):
+    monkeypatch.setenv("MERCHANT_DENYLIST", " Scam Shop , ,Too  Good   Deals,")
+    monkeypatch.delenv("MERCHANT_ALLOWLIST", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.merchant_denylist == ["Scam Shop", "Too  Good   Deals"]
+    assert settings.merchant_allowlist == []
+
+
+def test_without_lists_every_listing_may_alert():
+    settings = Settings(_env_file=None)
+
+    for merchant in ("Walmart", "Scam Shop", None, ""):
+        assert settings.merchant_may_alert(merchant) is True
+
+
+def test_denylist_matches_whole_names_ignoring_ascii_case_and_extra_spaces():
+    settings = Settings(_env_file=None, merchant_denylist=["Too  Good Deals", "Kmart"])
+
+    assert settings.merchant_may_alert("too good deals") is False
+    assert settings.merchant_may_alert("  TOO GOOD\tDEALS ") is False
+    assert settings.merchant_may_alert("kmart") is False
+    # A whole name only: another merchant that contains the name is not the listed one.
+    assert settings.merchant_may_alert("Too Good Deals Outlet") is True
+    assert settings.merchant_may_alert("Good Deals") is True
+    # Unicode case mapping must not make another name match a listed one.
+    assert settings.merchant_may_alert(KELVIN_KMART) is True
+    # A listing without a merchant name is not on a denylist.
+    assert settings.merchant_may_alert(None) is True
+
+
+def test_allowlist_lets_only_its_merchants_alert():
+    settings = Settings(_env_file=None, merchant_allowlist=["Best Buy", "Kmart"])
+
+    assert settings.merchant_may_alert("best buy") is True
+    assert settings.merchant_may_alert(" Best  Buy ") is True
+    assert settings.merchant_may_alert("Walmart") is False
+    assert settings.merchant_may_alert(KELVIN_KMART) is False
+    # A listing that names no merchant cannot be shown to be on the list.
+    assert settings.merchant_may_alert(None) is False
+    assert settings.merchant_may_alert("  ") is False
+
+
+def test_denylist_wins_over_the_allowlist():
+    settings = Settings(
+        _env_file=None, merchant_allowlist=["Best Buy"], merchant_denylist=["Best Buy"]
+    )
+
+    assert settings.merchant_may_alert("Best Buy") is False
+
+
+def test_verify_merchant_pct_defaults_to_40(monkeypatch):
+    monkeypatch.delenv("VERIFY_MERCHANT_PCT", raising=False)
+
+    assert Settings(_env_file=None).verify_merchant_pct == 40
+
+
+@pytest.mark.parametrize("value", ["0", "100", "-5", "nan", "inf", "forty"])
+def test_out_of_range_verify_merchant_pct_fails_validation(monkeypatch, value):
+    """It must be above 0 and below 100 percent: 0 would flag every price below the median."""
+    monkeypatch.setenv("VERIFY_MERCHANT_PCT", value)
+
+    with pytest.raises(ValidationError, match="verify_merchant_pct"):
+        Settings(_env_file=None)

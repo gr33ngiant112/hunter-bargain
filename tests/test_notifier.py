@@ -410,6 +410,47 @@ class TestAlertContent:
         assert "Lowest in 90 days" not in html_part
         assert "All-time low" not in html_part
 
+    def test_price_to_verify_warns_and_asks_to_verify_the_merchant(
+        self, smtp_settings, smtp_classes
+    ):
+        """#29: a price far below the check's other prices: no "Buy Now"."""
+        server = _server(smtp_classes[0])
+        result = replace(_result(), url="https://example.com/widget")
+
+        assert send_price_alert(item=_item(), result=result, verify_merchant=True) is True
+
+        plain, html_part = _sent_parts(server)
+        warning = (
+            "Verify merchant: this price is more than 40% below the median of this check's"
+            " prices. Check the seller before you buy."
+        )
+        assert plain.startswith(f"Price Alert: Widget\n{warning}\nPrice: $49.99 USD\n")
+        escaped = warning.replace("'", "&#x27;")  # as html.escape writes it
+        assert f">{escaped}</p>" in html_part
+        assert ">Verify merchant</a>" in html_part
+        assert "Buy Now" not in html_part
+
+    def test_price_to_verify_warns_without_a_link_too(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=_result(), verify_merchant=True) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "\nVerify merchant: this price is more than 40% below" in plain
+        assert "Link: N/A\n" in plain
+        assert ">Verify merchant: this price is more than 40% below" in html_part
+        assert "</a>" not in html_part
+
+    def test_other_prices_keep_buy_now(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+        result = replace(_result(), url="https://example.com/widget")
+
+        assert send_price_alert(item=_item(), result=result) is True
+
+        plain, html_part = _sent_parts(server)
+        assert ">Buy Now</a>" in html_part
+        assert "Verify merchant" not in plain + html_part
+
     @pytest.mark.parametrize("line_break", ["\r\n", "\n", "\r", "\u2028"])
     def test_line_break_in_merchant_adds_no_line(self, smtp_settings, smtp_classes, line_break):
         """A merchant name cannot add a line, such as a second Link line, to the plain-text part."""

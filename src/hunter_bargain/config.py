@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+import string
 from typing import Annotated, Literal, Self
 
 from pydantic import EmailStr, Field, SecretStr, field_validator, model_validator
@@ -13,6 +14,18 @@ def _recipient_key(address: str) -> str:
     applied, since it can turn a different address into an allowed one.
     """
     return address.lower() if address.isascii() else address
+
+
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _merchant_key(name: str) -> str:
+    """Comparison key for a merchant name: the whole name, ignoring ASCII case and extra spaces.
+
+    Only ASCII letters are lower-cased: Unicode case mapping could turn another name into a
+    listed one ("Kmart" written with U+212A KELVIN SIGN lower-cases to "kmart").
+    """
+    return " ".join(name.split()).translate(_ASCII_LOWER)
 
 
 class Settings(BaseSettings):
@@ -48,6 +61,15 @@ class Settings(BaseSettings):
     alert_cooldown_days: float = Field(default=7.0, ge=0, allow_inf_nan=False)
     alert_min_drop_pct: float = Field(default=0.0, ge=0, lt=100, allow_inf_nan=False)
 
+    # Merchants (a listing's seller) whose prices may alert, as comma-separated whole names
+    # (merchant_may_alert). Listings from other merchants are still saved, but never alert.
+    merchant_denylist: Annotated[list[str], NoDecode] = []
+    merchant_allowlist: Annotated[list[str], NoDecode] = []
+
+    # The price an alert reports is flagged "verify merchant" when it is more than this percent
+    # below the median of the same check's results. Out-of-range values fail validation.
+    verify_merchant_pct: float = Field(default=40.0, gt=0, lt=100, allow_inf_nan=False)
+
     # Where price alerts and notices go. "smtp" (the default): email, with the settings above;
     # while SMTP is not configured, a price alert is written to the log instead. "apprise": the
     # service APPRISE_URL names, e.g. an ntfy topic. Any other value fails validation.
@@ -73,10 +95,10 @@ class Settings(BaseSettings):
     # settings here: ignore keys that match no setting instead of refusing to start.
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
-    @field_validator("alert_recipients", mode="before")
+    @field_validator("alert_recipients", "merchant_denylist", "merchant_allowlist", mode="before")
     @classmethod
-    def _split_alert_recipients(cls, value: object) -> object:
-        """Split the comma-separated ALERT_RECIPIENTS string; blank entries are ignored."""
+    def _split_comma_separated(cls, value: object) -> object:
+        """Split a comma-separated list, e.g. ALERT_RECIPIENTS; blank entries are ignored."""
         if isinstance(value, str):
             return [entry.strip() for entry in value.split(",") if entry.strip()]
         return value
@@ -90,6 +112,21 @@ class Settings(BaseSettings):
     def is_alert_recipient(self, address: str) -> bool:
         """Return True if alerts may be sent to `address`, i.e. it is in ALERT_RECIPIENTS."""
         return _recipient_key(address) in {_recipient_key(a) for a in self.alert_recipients}
+
+    def merchant_may_alert(self, merchant: str | None) -> bool:
+        """Whether a listing from `merchant` may alert: MERCHANT_DENYLIST and MERCHANT_ALLOWLIST.
+
+        A denylisted merchant never alerts. When MERCHANT_ALLOWLIST is set, only its merchants
+        alert, and a listing that names no merchant cannot. Both empty: every listing may.
+        """
+        if not merchant or not merchant.strip():
+            return not self.merchant_allowlist
+        key = _merchant_key(merchant)
+        if key in {_merchant_key(name) for name in self.merchant_denylist}:
+            return False
+        return not self.merchant_allowlist or key in {
+            _merchant_key(name) for name in self.merchant_allowlist
+        }
 
 
 # Singleton — import this wherever configuration is needed.

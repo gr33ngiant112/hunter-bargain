@@ -189,6 +189,12 @@ class PriceCheckResult(BaseModel):
     # True when this check emailed an alert. False when no price met the target, when the last
     # alert already covers this price (no new low, cooldown not over: #9), or when sending failed.
     alert_sent: bool = False
+    # Results from merchants that MERCHANT_DENYLIST or MERCHANT_ALLOWLIST excludes (#29): saved
+    # and counted in results_count, but never the lowest price above or an alert.
+    merchant_excluded: int = 0
+    # The lowest price is more than VERIFY_MERCHANT_PCT percent below the median of this check's
+    # results (#29): too good to trust without checking the seller.
+    verify_merchant: bool = False
     # The item's lowest recorded prices, this check's included: in the last 90 days, and ever.
     low_90_days: PriceLow | None = None
     all_time_low: PriceLow | None = None

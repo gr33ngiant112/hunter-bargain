@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `HEARTBEAT_URL`: a push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a
+  10-second timeout, after each price check of all items that succeeds, so the monitor raises the
+  alarm when they stop. Empty, the default, is off. The URL is never logged (#24).
+- A warning when SerpAPI searches run low. After each check of all items, the app reads the
+  account's searches left from SerpAPI's Account API, which costs no search. With fewer left than
+  twice what the check made, it logs a warning and emails it to `ALERT_RECIPIENTS` when SMTP is
+  set up. The API key and the account's email address in that answer are never logged, stored
+  or returned (#24).
+- `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST`: comma-separated merchant names, compared ignoring
+  ASCII case and extra spaces. A denylisted merchant's price never alerts; with an allowlist,
+  only its merchants' prices do. Listings from other merchants are still saved, and
+  `merchant_excluded` in a price check's result counts them (#29).
+- A price more than `VERIFY_MERCHANT_PCT` (40) percent below the median of the same check's
+  prices, with at least 3 of them, is flagged `verify_merchant`: the alert email warns to check
+  the seller, its button says "Verify merchant" instead of "Buy Now", and `hb check` prints a
+  "verify merchant" line (#29).
+
+### Changed
+
+- A check of all items that checked nothing is recorded as failed: one whose every search failed
+  (a revoked key, no searches left, SerpAPI down), or one with items in which every item check
+  raised an error. `/health`, the heartbeat and the catch-up at the next start treat it as such;
+  an item deleted during the check is not a failure (#24).
+- `/health`'s limit follows `PRICE_CHECK_CRON`: the longest gap between its next 10 run times,
+  plus 2 hours (26 hours for the default daily schedule, 74 for weekdays only) (#24).
+- A price check searches Google Shopping and Bing Shopping at the same time, so it takes about as
+  long as the slower search; the results, engine errors and lowest price are as before (#22).
+- One SerpAPI engine on httpx serves both engines. Searches no longer send Google Shopping's
+  `num` or Bing Shopping's `count`, which SerpAPI ignores, and an engine error for a failed
+  request names httpx's error type, e.g. `request failed (ConnectError)` (#22).
+
+### Removed
+
+- The `google-search-results` dependency, and with it requests, urllib3 and charset-normalizer
+  (#22).
+
 ## [0.5.0] - 2026-10-12
 
 Upgrading from 0.4.0: read these notes first.

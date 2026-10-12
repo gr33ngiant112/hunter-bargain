@@ -67,11 +67,22 @@ def _price_lows(
     return [(label, f"${low.price:.2f} on {low.checked_at:%Y-%m-%d}") for label, low in lows if low]
 
 
-def _build_html_body(item: Item, result: SearchResult, lows: list[tuple[str, str]]) -> str:
+def _verify_merchant_warning() -> str:
+    """What an alert says about a price far below the check's other prices (#29)."""
+    return (
+        f"Verify merchant: this price is more than {settings.verify_merchant_pct:g}% below the"
+        " median of this check's prices. Check the seller before you buy."
+    )
+
+
+def _build_html_body(
+    item: Item, result: SearchResult, lows: list[tuple[str, str]], verify_merchant: bool
+) -> str:
     """Build the HTML email body for a price alert.
 
     The item name comes from an API caller and the title, currency, merchant and URL from a
-    third-party listing, so every value is HTML-escaped before it goes into the markup.
+    third-party listing, so every value is HTML-escaped before it goes into the markup. A price
+    to verify gets a warning, and its button says "Verify merchant" instead of "Buy Now".
     """
     name = _escape(item.name)
     title = _escape(result.title)
@@ -85,23 +96,33 @@ def _build_html_body(item: Item, result: SearchResult, lows: list[tuple[str, str
         for label, value in lows
     )
 
+    warning_html = ""
+    if verify_merchant:
+        warning_html = (
+            '<p style="color: #b45309; font-weight: bold;">'
+            f"{_escape(_verify_merchant_warning())}</p>"
+        )
+
     link_html = ""
     url = _link_url(result.url)
     if url:
+        button, color = (
+            ("Verify merchant", "#b45309") if verify_merchant else ("Buy Now", "#2d8a4e")
+        )
         link_html = (
             '<p style="text-align: center; margin: 24px 0;">'
             f'<a href="{_escape(url)}" '
-            'style="display: inline-block; background-color: #2d8a4e; color: #ffffff; '
+            f'style="display: inline-block; background-color: {color}; color: #ffffff; '
             "padding: 14px 32px; border-radius: 8px; text-decoration: none; "
             'font-size: 16px; font-weight: 700;">'
-            "Buy Now"
+            f"{button}"
             "</a></p>"
         )
 
     return f"""
     <html>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2d8a4e;">Price Alert: {name}</h2>
+        <h2 style="color: #2d8a4e;">Price Alert: {name}</h2>{warning_html}
         <p>Great news! We found <strong>{name}</strong> at or below your target price.</p>
         <table style="border-collapse: collapse; width: 100%; margin: 16px 0;">
             <tr>
@@ -201,12 +222,14 @@ def send_price_alert(
     result: SearchResult,
     low_90_days: PriceLow | None = None,
     all_time_low: PriceLow | None = None,
+    verify_merchant: bool = False,
 ) -> bool:
     """Send a price alert for an item that hit its target, through the notifier NOTIFIER selects.
 
     The alert also shows the item's lowest recorded price in the last 90 days and its all-time
-    low, when they are given (#31). While SMTP is not configured, the email notifier writes the
-    alert to the log instead (#28).
+    low, when they are given (#31). With `verify_merchant`, a price far below the check's other
+    prices, it warns to check the seller instead of offering "Buy Now" (#29). While SMTP is not
+    configured, the email notifier writes the alert to the log instead (#28).
     Returns True if the alert was sent successfully, False otherwise.
     Fails gracefully — never raises to the caller.
     """
@@ -237,9 +260,11 @@ def send_price_alert(
         # The plain text: the email's fallback part and the Apprise message. Like the HTML part,
         # it shows the link only for an http(s) URL.
         lows = _price_lows(low_90_days, all_time_low)
+        warning = f"{_verify_merchant_warning()}\n" if verify_merchant else ""
         plain = (
             f"Price Alert: {item.name}\n"
-            f"Price: ${result.price:.2f} {result.currency}\n"
+            + warning
+            + f"Price: ${result.price:.2f} {result.currency}\n"
             f"Target: ${item.target_price:.2f}\n"
             + "".join(f"{label}: {value}\n" for label, value in lows)
             + f"Source: {_source_label(result)}\n"
@@ -253,7 +278,7 @@ def send_price_alert(
         msg["From"] = settings.email_from or settings.smtp_user
         msg["To"] = item.notify_email
         msg.attach(MIMEText(plain, "plain"))
-        msg.attach(MIMEText(_build_html_body(item, result, lows), "html"))
+        msg.attach(MIMEText(_build_html_body(item, result, lows, verify_merchant), "html"))
         _send(msg)
 
         logger.info("Price alert sent to %s for item %d", item.notify_email, item.id)
