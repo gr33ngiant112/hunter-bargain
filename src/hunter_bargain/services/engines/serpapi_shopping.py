@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -36,6 +38,10 @@ class RowFields:
         fallback_url: The link to use when a row has no ``url`` field, or None.
         extensions: Metadata tags, or None if the engine's rows have none.
         condition: The condition of a second-hand offer, or None if the engine's rows have none.
+        multiple_sources: The flag for an item that more than one seller has, or None if the
+            engine's rows have none.
+
+    Both engines' rows give the item's rating and review count as ``rating`` and ``reviews``.
     """
 
     label: str
@@ -45,6 +51,7 @@ class RowFields:
     fallback_url: str | None = None
     extensions: str | None = None
     condition: str | None = None
+    multiple_sources: str | None = None
 
 
 ROW_FIELDS: dict[EngineName, RowFields] = {
@@ -57,6 +64,7 @@ ROW_FIELDS: dict[EngineName, RowFields] = {
         extensions="extensions",
         # Set on a second-hand offer, e.g. "used" or "refurbished": any value counts (#3).
         condition="second_hand_condition",
+        multiple_sources="multiple_sources",
     ),
     "bing_shopping": RowFields(
         label="Bing Shopping",
@@ -67,6 +75,32 @@ ROW_FIELDS: dict[EngineName, RowFields] = {
         fallback_url="link",
     ),
 }
+
+
+# A review count as text: Bing's strings such as "5K+", "1.2K" or "350", at most 16 characters.
+_REVIEW_COUNT = re.compile(r"\d+(?:[.,]\d+)*[KkMm]?\+?")
+_MAX_REVIEW_COUNT_LENGTH = 16
+
+
+def _rating(value: object) -> float | None:
+    """A row's rating: a number from 0 to 5, or None."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    rating = float(value)
+    return rating if math.isfinite(rating) and 0 <= rating <= 5 else None
+
+
+def _reviews(value: object) -> str | None:
+    """A row's review count as text, or None: Google's number written with thousands separators
+    ("13,000"), or Bing's string ("5K+") if it is a count. It is third-party text that goes into
+    alert email and CLI output, so anything else is left out."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{value:,}" if value >= 0 else None
+    if isinstance(value, str):
+        count = value.strip()
+        if len(count) <= _MAX_REVIEW_COUNT_LENGTH and _REVIEW_COUNT.fullmatch(count):
+            return count
+    return None
 
 
 class SerpApiShoppingEngine(SearchEngine):
@@ -145,6 +179,11 @@ class SerpApiShoppingEngine(SearchEngine):
                     extensions=tuple(raw_ext) if raw_ext else None,
                     merchant=item.get(fields.merchant) or None,
                     condition=condition,
+                    rating=_rating(item.get("rating")),
+                    reviews=_reviews(item.get("reviews")),
+                    multiple_sources=bool(
+                        fields.multiple_sources and item.get(fields.multiple_sources) is True
+                    ),
                 )
             )
 
