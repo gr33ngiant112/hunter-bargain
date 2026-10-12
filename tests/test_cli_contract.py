@@ -3,6 +3,7 @@ on a loopback port. A path, method, status code or field that the CLI and the AP
 fails here. The tests in test_cli.py stub httpx.request and check the CLI's own handling."""
 
 import datetime as dt
+import json
 import socket
 import threading
 import time
@@ -160,3 +161,41 @@ def test_add_list_update_check_and_remove_an_item(hb, db_session, stub_serpapi, 
     assert db_session.query(Item).count() == 0
 
     assert "No items tracked yet." in hb("ls")
+
+
+def test_status_shows_the_last_check_of_all_items(hb, stub_serpapi, monkeypatch):
+    """#24: each check of all items that hb check starts is recorded with its counts, and hb
+    status shows the last one. SerpAPI's error responses count as engine errors."""
+    monkeypatch.setattr(settings, "serpapi_key", SecretStr("test-key"))  # searches go to the stub
+    now = dt.datetime(2026, 10, 12, 9, 0, 41, tzinfo=dt.UTC)
+    monkeypatch.setattr(scheduler_module, "_now", lambda: now)
+
+    assert hb("status") == "No price check of all items is recorded yet.\n"
+
+    # Both engines find the Widget at $9.99, under its $10 target: one alert.
+    hb("add", "Widget", "-e", EMAIL, "-t", "10")
+    with patch("hunter_bargain.services.searcher.send_price_alert", return_value=True) as send:
+        hb("check")
+        _wait_for_the_run_to_end()
+    send.assert_called_once()
+    assert hb("status") == (
+        "Last price check of all items: succeeded\n"
+        "  Started:       2026-10-12 09:00:41 UTC\n"
+        "  Finished:      2026-10-12 09:00:41 UTC\n"
+        "  Items checked: 1\n"
+        "  Searches used: 2\n"
+        "  Engine errors: 0\n"
+        "  Alerts sent:   1\n"
+    )
+
+    # SerpAPI refuses both searches: the account has run out of them.
+    stub_serpapi.status = 429
+    stub_serpapi.body = json.dumps({"error": "Your account has run out of searches."})
+    hb("check")
+    _wait_for_the_run_to_end()
+    output = hb("status")
+    assert output.startswith("Last price check of all items: succeeded\n")
+    assert "  Items checked: 1\n  Searches used: 0\n  Engine errors: 2\n  Alerts sent:   0\n" in (
+        output
+    )
+    assert "Some searches failed" in output

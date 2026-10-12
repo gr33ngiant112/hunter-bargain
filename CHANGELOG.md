@@ -30,12 +30,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.claude/settings.json`: Claude Code may not read or edit `.env` or `~/.config/hunter-bargain/`,
   and asks before running `docker compose`, `uvicorn`, `hb check` or `curl`
 - A `check_runs` table: each check of all items, by the daily job or
-  `POST /api/v1/prices/check-all`, records when it started and finished and whether it succeeded
+  `POST /api/v1/prices/check-all`, records when it started and finished, whether it succeeded,
+  and when it ends, the items it checked, the searches it used, its engine errors (searches that
+  failed, such as on a SerpAPI error response) and the alerts it sent
+- `GET /api/v1/runs`: the latest checks of all items, newest first (`?limit=`, default 10), and
+  `hb status`, which shows the last one
 - `ALERT_MIN_DROP_PCT` (default 0) and `ALERT_COOLDOWN_DAYS` (default 7): how far below an item's
   last alert a new low must be, and how many days pass before a price still on target is emailed
   again
 - `alert_sent` in the result of `POST /api/v1/prices/check/{item_id}`: whether the check emailed
   an alert
+- `searches_used` in the same result: how many of the engines' searches worked
 - `SECURITY.md`: report a vulnerability privately, through GitHub's private vulnerability
   reporting, not in a public issue
 - `.github/dependabot.yml`: weekly Dependabot pull requests for `uv.lock` (the floors in
@@ -47,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `GET /health` answers 503, with the reason, when the scheduler is not running or no check of
+  all items has succeeded in 26 hours (counted from the app's start until one has); it answered
+  `{"status": "ok"}` whatever happened. The healthy answer is unchanged.
 - `POST /api/v1/prices/check-all` answers 202 at once and checks every item in the background,
   as the daily job does: results go to the price history, the log and alert emails. It answers
   409 while a check of all items, its own or the daily job's, is running.

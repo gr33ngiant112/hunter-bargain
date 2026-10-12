@@ -693,6 +693,7 @@ class TestSerpApiResponses:
 
         assert result.engine_errors == [f"{engine.name}: {expected}"]
         assert (result.results_count, result.lowest_price) == (0, None)
+        assert result.searches_used == 0  # #24: a failed search is an engine error instead
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
         assert errors == [f"Engine {engine.name} failed for item {item.id}: {expected!r}"]
 
@@ -746,6 +747,7 @@ class TestSerpApiResponses:
             result = run_price_check(item=item, db=db_session)
 
         assert (result.results_count, result.lowest_price, result.engine_errors) == (0, None, [])
+        assert result.searches_used == 1  # #24: the search worked, and found nothing
         assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
         assert (
             f"SerpAPI {engine.name} search for 'Widget' found no results:"
@@ -1166,6 +1168,7 @@ class TestRunPriceCheck:
             "google_shopping: SERPAPI_KEY is not set",
             "bing_shopping: SERPAPI_KEY is not set",
         ]
+        assert result.searches_used == 0
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
         assert errors == [
             f"Engine google_shopping failed for item {item.id}: 'SERPAPI_KEY is not set'",
@@ -1194,6 +1197,7 @@ class TestRunPriceCheck:
 
         assert result.engine_errors == ["broken: unexpected error (TypeError)"]
         assert (result.lowest_price, result.lowest_source) == (45.0, "working")
+        assert result.searches_used == 1  # #24: the working engine's search only
         [record] = [r for r in caplog.records if r.levelno >= logging.ERROR]
         assert record.getMessage() == f"Engine broken failed for item {item.id}"
         assert record.exc_info is not None  # logged with its traceback
@@ -1302,6 +1306,7 @@ class TestDocumentedRowsThroughPriceCheck:
         alerted = send_alert.call_args.kwargs["result"]
         assert (alerted.price, alerted.source, alerted.merchant, alerted.url) == expected
         assert {r.source for r in db_session.query(PriceRecord)} == {result.lowest_source}
+        assert result.searches_used == 2  # #24: both engines searched
 
 
 # #9: a price that stays on target is emailed once; after that, a new low or the cooldown.

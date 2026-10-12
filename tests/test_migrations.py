@@ -271,3 +271,28 @@ def test_price_record_for_a_missing_item_is_refused(tmp_path):
 
 def test_test_database_enforces_foreign_keys_as_the_apps_does(db_session):
     assert db_session.execute(text("PRAGMA foreign_keys")).scalar_one() == 1
+
+
+def test_runs_recorded_before_the_counts_keep_their_rows_with_the_counts_unknown(tmp_path):
+    """#24: revision 9124d0caa4e8 adds each run's counts. A run recorded before it gets none
+    (NULL), not 0, since what it did is unknown; a downgrade drops the counts and keeps the run."""
+    db_file = tmp_path / "hb.db"
+    engine = _engine(db_file)
+    config = db.alembic_config(engine)
+    command.upgrade(config, "08579e2a6e54")
+    run = ("2026-10-06 09:00:00.000000", "2026-10-06 09:02:00.000000", "succeeded")
+    with engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO check_runs (started_at, finished_at, status) VALUES (:s, :f, :st)"),
+            {"s": run[0], "f": run[1], "st": run[2]},
+        )
+
+    command.upgrade(config, "9124d0caa4e8")
+    counts = "items_checked, searches_used, engine_errors, alerts_sent"
+    assert _query(db_file, f"SELECT id, status, {counts} FROM check_runs") == [
+        (1, "succeeded", None, None, None, None)
+    ]
+
+    command.downgrade(config, "08579e2a6e54")
+    engine.dispose()
+    assert _query(db_file, "SELECT * FROM check_runs") == [(1, *run)]

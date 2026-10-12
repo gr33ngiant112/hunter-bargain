@@ -564,7 +564,8 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
 
     1. Build search query from item name + keywords.
     2. Query each registered engine; an engine that cannot search is logged at ERROR and
-       listed in engine_errors, so a failed search is not reported as "no results".
+       listed in engine_errors, so a failed search is not reported as "no results". The
+       searches that worked are counted in searches_used.
     3. Persist all price observations, then read the item's lowest price in the last 90 days
        and its all-time low, this check's prices included (#31).
     4. If the lowest price meets the target and no earlier alert covers it (_alert_due), email
@@ -576,9 +577,11 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
 
     all_results: list[SearchResult] = []
     engine_errors: list[str] = []
+    searches_used = 0
     for engine in _ENGINES:
         try:
             results = engine.search(query)
+            searches_used += 1
             all_results.extend(results)
         except EngineError as e:
             # Its message holds the HTTP status and SerpAPI's error string, never the key.
@@ -636,6 +639,7 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
         results_count=len(relevant_results),
         records=[PriceRecordResponse.model_validate(r) for r in records],
         engine_errors=engine_errors,
+        searches_used=searches_used,
         alert_sent=alert_sent,
         low_90_days=low_90_days,
         all_time_low=all_time_low,
