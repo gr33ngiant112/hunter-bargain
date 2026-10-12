@@ -37,7 +37,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The image the app deploys, built as `docker compose build` builds it: $CI_NAME-app.
+      # The image the app deploys, built as `docker compose build` builds it: $CI_NAME-app, and
+      # $CI_NAME-data-permissions from the same Dockerfile for the one-off volume-ownership service.
       - name: Build the app image
         run: docker compose -p "$CI_NAME" build
       # The app's packages from uv.lock, plus the dev tools and the tests. The build fails when
@@ -88,7 +89,7 @@ jobs:
         run: |
           docker rm --force "$CI_NAME-smoke"
           docker compose -p "$CI_NAME" down --volumes --remove-orphans
-          docker image rm --force "$CI_NAME-app" "$CI_NAME-test"
+          docker image rm --force "$CI_NAME-app" "$CI_NAME-data-permissions" "$CI_NAME-test"
 
   # The lowest versions pyproject.toml allows for each direct dependency, not uv.lock, so the
   # declared floors stay installable and tested: the Dockerfile's test-lowest-direct stage.
