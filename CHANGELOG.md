@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Price history (#31): `GET /api/v1/items/{id}/prices` lists an item's recorded prices, newest
+  first, and `GET /api/v1/items/{id}/stats` gives its low and median price per day and its
+  lowest prices. `hb history ID` shows the lowest price of each day as a sparkline. Alert emails
+  and `hb check` also show the item's lowest price in the last 90 days and its all-time low.
 - Database migrations (Alembic, in `src/hunter_bargain/migrations`): the app migrates its database
   as it starts, so a release can change the schema of an existing database. `alembic.ini` serves
   the `alembic` command in development, and CI fails when the models need a migration that does
