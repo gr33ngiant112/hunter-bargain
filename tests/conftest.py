@@ -15,13 +15,13 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from serpapi import SerpApiClient
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.db import Base, create_db_engine, get_db
 from hunter_bargain.main import app
+from hunter_bargain.services.engines import base
 
 # notify_email values the API tests post. Item create/update return 422 for an address outside
 # ALERT_RECIPIENTS, so the client fixture allows exactly these.
@@ -89,7 +89,7 @@ def _default_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     with monkeypatch.
 
     main.py also set the log levels from LOG_LEVEL then (configure_logging): the root logger
-    and urllib3 get the levels the default LOG_LEVEL gives them, and their own levels back after
+    and httpx get the levels the default LOG_LEVEL gives them, and their own levels back after
     the test.
     """
     names = Settings.model_fields
@@ -100,14 +100,14 @@ def _default_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     for name in names:
         monkeypatch.setattr(settings, name, getattr(defaults, name))
 
-    root, urllib3 = logging.getLogger(), logging.getLogger("urllib3")
-    saved = root.level, urllib3.level
+    root, httpx = logging.getLogger(), logging.getLogger("httpx")
+    saved = root.level, httpx.level
     level = getattr(logging, defaults.log_level.upper())
     root.setLevel(level)
-    urllib3.setLevel(max(level, logging.WARNING))
+    httpx.setLevel(max(level, logging.WARNING))
     yield
     root.setLevel(saved[0])
-    urllib3.setLevel(saved[1])
+    httpx.setLevel(saved[1])
 
 
 @pytest.fixture
@@ -172,6 +172,8 @@ class StubSerpApi:
     """A local stand-in for serpapi.com: every search gets this status and body.
 
     A search whose engine parameter (e.g. google_shopping) is a key of `bodies` gets that body.
+    With a `barrier`, each search waits there before it is answered: with Barrier(2), neither of
+    two searches is answered until both have arrived. A broken barrier closes the connection.
     """
 
     url: str
@@ -180,11 +182,12 @@ class StubSerpApi:
     body: str = json.dumps({"shopping_results": [WIDGET_ROW]})
     content_type: str = "application/json"
     bodies: dict[str, str] = field(default_factory=dict)
+    barrier: threading.Barrier | None = None
 
 
 def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
-    # SerpApiClient's subclasses (GoogleSearch, ...) read BACKEND from it too.
-    monkeypatch.setattr(SerpApiClient, "BACKEND", url)
+    """Send the engines' searches to the server at `url` instead of serpapi.com."""
+    monkeypatch.setattr(base, "SERPAPI_URL", f"{url}/search")
     monkeypatch.setenv("no_proxy", "127.0.0.1")
 
 
@@ -215,6 +218,8 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
         def do_GET(self) -> None:
             query = parse_qs(urlsplit(self.path).query)
             stub.queries.append(query)
+            if stub.barrier is not None:
+                stub.barrier.wait()
             body = stub.bodies.get(query.get("engine", [""])[0], stub.body).encode()
             self.send_response(stub.status)
             self.send_header("Content-Type", stub.content_type)

@@ -10,8 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-import requests
-from serpapi import SerpApiClient
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +26,11 @@ _PLAIN_USD_AMOUNT = re.compile(r"\$((?:[1-9][0-9]{0,2}(?:,[0-9]{3})+|[0-9]+)(?:\
 # A payment-plan price ends with the payment period, e.g. "$20.99/mo".
 _INSTALLMENT_SUFFIXES = ("/mo", "/wk")
 
-# Seconds to wait for SerpAPI to connect, and then for each read. The client's default is
-# 60000 s (16.7 hours), long enough for one stalled search to hold the scheduler's job thread.
+# SerpAPI's search endpoint. The tests point it at a local stub.
+SERPAPI_URL = "https://serpapi.com/search"
+
+# Seconds to wait for SerpAPI to connect, and then for each read: a stalled search must not hold
+# the scheduler's job thread.
 SERPAPI_TIMEOUT = 20
 
 # SerpAPI's error string is third-party text: an engine error keeps at most this many characters.
@@ -135,19 +137,18 @@ def fetch_serpapi(params: dict[str, Any]) -> dict[str, Any]:
     worked and found nothing, so its body is returned.
     """
     engine, query = params["engine"], params["q"]
-    # GoogleSearch cannot take a timeout, and get_dict() would read any error body as results.
-    client = SerpApiClient({**params, "output": "json"}, timeout=SERPAPI_TIMEOUT)
     try:
-        response = client.get_response()
-    except requests.RequestException as e:
+        response = httpx.get(
+            SERPAPI_URL, params={**params, "output": "json"}, timeout=SERPAPI_TIMEOUT
+        )
+    except httpx.HTTPError as e:
         # The request URL carries the API key: log the error type and host only.
-        url = getattr(e.request, "url", None) or ""
         logger.error(
             "SerpAPI %s search for %r failed: %s (host %s)",
             engine,
             query,
             type(e).__name__,
-            urlsplit(url).hostname,
+            urlsplit(SERPAPI_URL).hostname,
         )
         raise EngineError(f"request failed ({type(e).__name__})") from None
 

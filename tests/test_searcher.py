@@ -3,20 +3,21 @@
 import datetime as dt
 import json
 import logging
+import threading
+import time
 from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from pydantic import SecretStr
-from requests.adapters import HTTPAdapter
 
 from hunter_bargain.config import settings as app_settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services.engines import base
 from hunter_bargain.services.engines.base import SearchResult
-from hunter_bargain.services.engines.bing import BingShoppingEngine
-from hunter_bargain.services.engines.google import GoogleShoppingEngine
+from hunter_bargain.services.engines.serpapi_shopping import SerpApiShoppingEngine
 from hunter_bargain.services.searcher import (
     _build_query,
     _has_accessory_extension,
@@ -194,8 +195,7 @@ NO_RESULTS_BODY = {
     "error": "Google hasn't returned any results for this query.",
 }
 
-GOOGLE_LOGGER = "hunter_bargain.services.engines.google"
-BING_LOGGER = "hunter_bargain.services.engines.bing"
+ENGINE_LOGGER = "hunter_bargain.services.engines.serpapi_shopping"
 
 
 def _without(row: dict, *fields: str) -> dict:
@@ -245,7 +245,8 @@ def serpapi_key(monkeypatch):
 def engines(google_search, bing_search):
     """Both real engines in the searcher's registry, their searches answered by the stub."""
     with patch(
-        "hunter_bargain.services.searcher._ENGINES", [GoogleShoppingEngine(), BingShoppingEngine()]
+        "hunter_bargain.services.searcher._ENGINES",
+        [SerpApiShoppingEngine("google_shopping"), SerpApiShoppingEngine("bing_shopping")],
     ):
         yield google_search, bing_search
 
@@ -413,18 +414,18 @@ class TestBuildQuery:
 class TestGoogleShoppingEngine:
     """Tests for the Google Shopping engine, its searches answered by the local stub SerpAPI."""
 
-    @patch("hunter_bargain.services.engines.google.settings")
+    @patch("hunter_bargain.services.engines.serpapi_shopping.settings")
     def test_missing_api_key_is_an_engine_error(self, mock_settings):
         """Without a key no search runs: that is reported, not read as zero results (#8)."""
         mock_settings.serpapi_key = SecretStr("")
 
         with pytest.raises(base.EngineError, match="^SERPAPI_KEY is not set$"):
-            GoogleShoppingEngine().search("iPhone")
+            SerpApiShoppingEngine("google_shopping").search("iPhone")
 
     def test_returns_sorted_results(self, google_search):
         _serve(google_search, GOOGLE_FOLGERS, GOOGLE_BUSTELO, GOOGLE_MAXWELL_HOUSE)
 
-        results = GoogleShoppingEngine().search("coffee")
+        results = SerpApiShoppingEngine("google_shopping").search("coffee")
 
         assert [(r.title, r.price) for r in results] == [
             ("Bustelo Coffee Espresso", 4.99),
@@ -437,7 +438,7 @@ class TestGoogleShoppingEngine:
         """A row has product_link and no link: the result links there and names the seller (#34)."""
         _serve(google_search, GOOGLE_FOLGERS)
 
-        [result] = GoogleShoppingEngine().search("coffee")
+        [result] = SerpApiShoppingEngine("google_shopping").search("coffee")
 
         assert result.url == "https://www.google.com/shopping/product/16914877625280977865?gl=us"
         assert result.merchant == "Walmart"
@@ -457,8 +458,8 @@ class TestGoogleShoppingEngine:
     def test_skips_monthly_price(self, google_search, caplog, row):
         _serve(google_search, row, GOOGLE_FOLGERS)
 
-        with caplog.at_level(logging.DEBUG, logger=GOOGLE_LOGGER):
-            results = GoogleShoppingEngine().search("iphone")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("google_shopping").search("iphone")
 
         assert [r.title for r in results] == ["Folgers Classic Roast Ground Coffee"]
         [record] = _skip_records(caplog)
@@ -469,8 +470,8 @@ class TestGoogleShoppingEngine:
         """The lira row is not taken as 28782.94 USD, and its euro alternative_price is not used."""
         _serve(google_search, GOOGLE_LIRA, GOOGLE_FOLGERS)
 
-        with caplog.at_level(logging.DEBUG, logger=GOOGLE_LOGGER):
-            results = GoogleShoppingEngine().search("iphone")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("google_shopping").search("iphone")
 
         assert [r.title for r in results] == ["Folgers Classic Roast Ground Coffee"]
         [record] = _skip_records(caplog)
@@ -483,12 +484,12 @@ class TestGoogleShoppingEngine:
         """Without a price string the currency is unknown, so extracted_price is not used."""
         _serve(google_search, _without(GOOGLE_FOLGERS, "price"))
 
-        assert GoogleShoppingEngine().search("coffee") == []
+        assert SerpApiShoppingEngine("google_shopping").search("coffee") == []
 
     def test_parses_price_string_without_extracted_price(self, google_search):
         _serve(google_search, _without(GOOGLE_FOLGERS, "extracted_price"))
 
-        [result] = GoogleShoppingEngine().search("coffee")
+        [result] = SerpApiShoppingEngine("google_shopping").search("coffee")
 
         assert (result.price, result.currency) == (5.88, "USD")
 
@@ -498,7 +499,7 @@ class TestGoogleShoppingEngine:
         row = {**GOOGLE_FOLGERS, "second_hand_condition": condition}
         _serve(google_search, row, GOOGLE_BUSTELO)
 
-        results = GoogleShoppingEngine().search("coffee")
+        results = SerpApiShoppingEngine("google_shopping").search("coffee")
 
         assert [(r.title, r.condition) for r in results] == [
             ("Bustelo Coffee Espresso", None),
@@ -514,8 +515,8 @@ class TestGoogleShoppingEngine:
             google_search, {**GOOGLE_FOLGERS, "extracted_price": extracted_price}, GOOGLE_BUSTELO
         )
 
-        with caplog.at_level(logging.DEBUG, logger=GOOGLE_LOGGER):
-            results = GoogleShoppingEngine().search("coffee")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("google_shopping").search("coffee")
 
         assert [(r.title, r.price) for r in results] == [("Bustelo Coffee Espresso", 4.99)]
         [record] = _skip_records(caplog)
@@ -529,8 +530,8 @@ class TestGoogleShoppingEngine:
         row = {**_without(GOOGLE_FOLGERS, "extracted_price"), "price": price}
         _serve(google_search, row, GOOGLE_BUSTELO)
 
-        with caplog.at_level(logging.DEBUG, logger=GOOGLE_LOGGER):
-            results = GoogleShoppingEngine().search("coffee")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("google_shopping").search("coffee")
 
         assert [(r.title, r.price) for r in results] == [("Bustelo Coffee Espresso", 4.99)]
         [record] = _skip_records(caplog)
@@ -546,7 +547,7 @@ class TestBingShoppingEngine:
         """The seller's own page, not the bing.com/ck redirect in link (#34)."""
         _serve(bing_search, BING_BI_SWING_JACKET, BING_PUFFER_JACKET)
 
-        results = BingShoppingEngine().search("jacket")
+        results = SerpApiShoppingEngine("bing_shopping").search("jacket")
 
         assert [(r.price, r.merchant, r.url) for r in results] == [
             (99.95, "Vermont Country Store", BING_PUFFER_JACKET["external_link"]),
@@ -558,7 +559,7 @@ class TestBingShoppingEngine:
     def test_falls_back_to_link_without_external_link(self, bing_search):
         _serve(bing_search, _without(BING_PUFFER_JACKET, "external_link"))
 
-        [result] = BingShoppingEngine().search("jacket")
+        [result] = SerpApiShoppingEngine("bing_shopping").search("jacket")
 
         assert result.url == BING_PUFFER_JACKET["link"]
         assert result.merchant == "Vermont Country Store"
@@ -569,8 +570,8 @@ class TestBingShoppingEngine:
             bing_search, {**BING_IPHONE_13, "installments": BING_INSTALLMENTS}, BING_PUFFER_JACKET
         )
 
-        with caplog.at_level(logging.DEBUG, logger=BING_LOGGER):
-            results = BingShoppingEngine().search("iphone")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("bing_shopping").search("iphone")
 
         assert [r.title for r in results] == [BING_PUFFER_JACKET["title"]]
         [record] = _skip_records(caplog)
@@ -583,8 +584,8 @@ class TestBingShoppingEngine:
         """Without a price string the currency is unknown, so extracted_price is not used."""
         _serve(bing_search, _without(BING_PUFFER_JACKET, "price"))
 
-        with caplog.at_level(logging.DEBUG, logger=BING_LOGGER):
-            assert BingShoppingEngine().search("jacket") == []
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            assert SerpApiShoppingEngine("bing_shopping").search("jacket") == []
 
         [record] = _skip_records(caplog)
         assert record.levelno == logging.DEBUG
@@ -593,7 +594,7 @@ class TestBingShoppingEngine:
     def test_parses_price_string_without_extracted_price(self, bing_search):
         _serve(bing_search, _without(BING_PUFFER_JACKET, "extracted_price"))
 
-        [result] = BingShoppingEngine().search("jacket")
+        [result] = SerpApiShoppingEngine("bing_shopping").search("jacket")
 
         assert (result.price, result.currency) == (99.95, "USD")
 
@@ -605,8 +606,8 @@ class TestBingShoppingEngine:
         row = {**BING_PUFFER_JACKET, "extracted_price": extracted_price}
         _serve(bing_search, row, BING_BI_SWING_JACKET)
 
-        with caplog.at_level(logging.DEBUG, logger=BING_LOGGER):
-            results = BingShoppingEngine().search("jacket")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("bing_shopping").search("jacket")
 
         assert [(r.title, r.price) for r in results] == [(BING_BI_SWING_JACKET["title"], 168.0)]
         [record] = _skip_records(caplog)
@@ -618,8 +619,8 @@ class TestBingShoppingEngine:
         row = {**_without(BING_PUFFER_JACKET, "extracted_price"), "price": price}
         _serve(bing_search, row, BING_BI_SWING_JACKET)
 
-        with caplog.at_level(logging.DEBUG, logger=BING_LOGGER):
-            results = BingShoppingEngine().search("jacket")
+        with caplog.at_level(logging.DEBUG, logger=ENGINE_LOGGER):
+            results = SerpApiShoppingEngine("bing_shopping").search("jacket")
 
         assert [(r.title, r.price) for r in results] == [(BING_BI_SWING_JACKET["title"], 168.0)]
         [record] = _skip_records(caplog)
@@ -627,10 +628,10 @@ class TestBingShoppingEngine:
 
 
 @pytest.mark.parametrize(
-    "engine_cls", [GoogleShoppingEngine, BingShoppingEngine], ids=["google", "bing"]
+    "engine_name", ["google_shopping", "bing_shopping"], ids=["google", "bing"]
 )
 class TestSerpApiResponses:
-    """Responses from a local stub SerpAPI, through the real client and requests (#8)."""
+    """Responses from a local stub SerpAPI, through the real client and httpx (#8)."""
 
     @pytest.mark.parametrize(
         ("status", "body", "expected"),
@@ -674,7 +675,7 @@ class TestSerpApiResponses:
     )
     def test_error_response_is_logged_and_returned_as_engine_error(
         self,
-        engine_cls,
+        engine_name,
         status,
         body,
         expected,
@@ -685,7 +686,7 @@ class TestSerpApiResponses:
         caplog,
     ):
         stub_serpapi.status, stub_serpapi.body = status, json.dumps(body)
-        engine = engine_cls()
+        engine = SerpApiShoppingEngine(engine_name)
         item = _tracked_item(db_session, "Widget", 20.0)
 
         with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
@@ -706,12 +707,12 @@ class TestSerpApiResponses:
         ids=["502", "200"],
     )
     def test_non_json_body_is_reported_by_status_only(
-        self, engine_cls, status, expected, serpapi_key, stub_serpapi, db_session, send_alert
+        self, engine_name, status, expected, serpapi_key, stub_serpapi, db_session, send_alert
     ):
         """An HTML page, e.g. from a proxy, is an engine error; its text is not used."""
         stub_serpapi.status, stub_serpapi.content_type = status, "text/html"
         stub_serpapi.body = "<html><body><h1>Bad Gateway</h1></body></html>"
-        engine = engine_cls()
+        engine = SerpApiShoppingEngine(engine_name)
         item = _tracked_item(db_session, "Widget", 20.0)
 
         with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
@@ -720,11 +721,11 @@ class TestSerpApiResponses:
         assert result.engine_errors == [f"{engine.name}: {expected}"]
 
     def test_long_error_string_is_cut_to_200_characters(
-        self, engine_cls, serpapi_key, stub_serpapi, db_session, send_alert
+        self, engine_name, serpapi_key, stub_serpapi, db_session, send_alert
     ):
         """SerpAPI's error string is third-party text: an engine error keeps 200 characters."""
         stub_serpapi.status, stub_serpapi.body = 401, json.dumps({"error": "x" * 1000})
-        engine = engine_cls()
+        engine = SerpApiShoppingEngine(engine_name)
         item = _tracked_item(db_session, "Widget", 20.0)
 
         with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
@@ -735,12 +736,12 @@ class TestSerpApiResponses:
         ]
 
     def test_success_with_error_string_is_zero_results_not_an_engine_error(
-        self, engine_cls, serpapi_key, stub_serpapi, db_session, send_alert, caplog
+        self, engine_name, serpapi_key, stub_serpapi, db_session, send_alert, caplog
     ):
         """HTTP 200 with status Success and an error string: the search found nothing."""
         caplog.set_level(logging.INFO)
         stub_serpapi.body = json.dumps(NO_RESULTS_BODY)
-        engine = engine_cls()
+        engine = SerpApiShoppingEngine(engine_name)
         item = _tracked_item(db_session, "Widget", 20.0)
 
         with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
@@ -755,21 +756,33 @@ class TestSerpApiResponses:
             " (shopping_results_state 'Fully empty')"
         ) in [r.getMessage() for r in caplog.records]
 
-    def test_request_has_a_finite_timeout(self, engine_cls, serpapi_key, stub_serpapi, monkeypatch):
-        """requests gets 20 s, not the legacy client's default of 60000 s (16.7 hours)."""
+    def test_request_has_a_finite_timeout(
+        self, engine_name, serpapi_key, stub_serpapi, monkeypatch
+    ):
+        """httpx gets 20 s to connect and for each read (and write, and pooled connection)."""
         timeouts = []
-        send = HTTPAdapter.send
+        handle_request = httpx.HTTPTransport.handle_request
 
-        def send_and_record(adapter, request, **kwargs):
-            timeouts.append(kwargs["timeout"])
-            return send(adapter, request, **kwargs)
+        def handle_and_record(transport, request):
+            timeouts.append(request.extensions["timeout"])
+            return handle_request(transport, request)
 
-        monkeypatch.setattr(HTTPAdapter, "send", send_and_record)
+        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle_and_record)
 
-        results = engine_cls().search("widget")
+        results = SerpApiShoppingEngine(engine_name).search("widget")
 
         assert [r.price for r in results] == [9.99]  # the stub answered
-        assert timeouts == [20]
+        assert timeouts == [{"connect": 20, "read": 20, "write": 20, "pool": 20}]
+
+    def test_request_sends_the_engine_query_key_and_output_only(
+        self, engine_name, serpapi_key, stub_serpapi
+    ):
+        """No num (Google) or count (Bing): SerpAPI's docs give neither an effect (#22)."""
+        SerpApiShoppingEngine(engine_name).search("widget")
+
+        assert stub_serpapi.queries == [
+            {"engine": [engine_name], "q": ["widget"], "api_key": ["test-key"], "output": ["json"]}
+        ]
 
 
 class TestIsRelevant:
@@ -1159,7 +1172,7 @@ class TestRunPriceCheck:
         """Without SERPAPI_KEY the check lists both engines as failed, not as "no results"."""
         monkeypatch.setattr(app_settings, "serpapi_key", SecretStr(""))
         item = _tracked_item(db_session, "Widget", 20.0)
-        engines = [GoogleShoppingEngine(), BingShoppingEngine()]
+        engines = [SerpApiShoppingEngine("google_shopping"), SerpApiShoppingEngine("bing_shopping")]
 
         with patch("hunter_bargain.services.searcher._ENGINES", engines):
             result = run_price_check(item=item, db=db_session)
@@ -1202,6 +1215,55 @@ class TestRunPriceCheck:
         assert record.getMessage() == f"Engine broken failed for item {item.id}"
         assert record.exc_info is not None  # logged with its traceback
         assert "fake-key-in-exception-text" not in caplog.text  # redacted by the log setup
+
+    def test_engines_search_at_the_same_time(
+        self, serpapi_key, stub_serpapi, send_alert, db_session
+    ):
+        """The stub answers neither search until both have reached it (#22). Run in turn, the
+        first search would wait there until the barrier's timeout broke it, and both would fail."""
+        stub_serpapi.barrier = threading.Barrier(2, timeout=5)
+        item = _tracked_item(db_session, "Widget", 5.0)
+
+        result = run_price_check(item=item, db=db_session)  # the app's own two engines
+
+        assert sorted(q["engine"][0] for q in stub_serpapi.queries) == [
+            "bing_shopping",
+            "google_shopping",
+        ]
+        assert (result.engine_errors, result.searches_used) == ([], 2)
+        # The stub answers both with a $9.99 Widget: the first engine's stays the lowest.
+        assert result.lowest_source == "google_shopping"
+        assert [r.source for r in result.records] == ["google_shopping", "bing_shopping"]
+
+    def test_engine_order_is_kept_whichever_search_ends_first(self, db_session, send_alert):
+        """The first engine's search ends after the second's, yet its result still comes first:
+        of two equal prices it is the lowest, as when the engines ran in turn (#22)."""
+        second_ended = threading.Event()
+
+        def first_search(query: str) -> list[SearchResult]:
+            assert second_ended.wait(timeout=5)
+            time.sleep(0.1)  # for the second search to return
+            return [
+                SearchResult(title="Tracked Widget", price=45.0, currency="USD", source="first")
+            ]
+
+        def second_search(query: str) -> list[SearchResult]:
+            second_ended.set()
+            return [
+                SearchResult(title="Tracked Widget", price=45.0, currency="USD", source="second")
+            ]
+
+        first, second = MagicMock(), MagicMock()
+        first.name, first.search.side_effect = "first", first_search
+        second.name, second.search.side_effect = "second", second_search
+        item = _tracked_item(db_session, "Tracked Widget", 50.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [first, second]):
+            result = run_price_check(item=item, db=db_session)
+
+        assert (result.engine_errors, result.lowest_source) == ([], "first")
+        assert [r.source for r in result.records] == ["first", "second"]
+        assert send_alert.call_args.kwargs["result"].source == "first"
 
 
 class TestDocumentedRowsThroughPriceCheck:
