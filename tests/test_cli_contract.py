@@ -77,6 +77,41 @@ def hb(api_url: str) -> Callable[..., str]:
     return run
 
 
+def test_history_shows_each_days_low_and_the_lows(hb, db_session):
+    """hb history reads GET /api/v1/items/{id}/stats (#31)."""
+    item = Item(name="Widget", notify_email=EMAIL, target_price=5.0)
+    db_session.add(item)
+    db_session.commit()
+    now = dt.datetime.now(dt.UTC)
+    for price, days_ago in [(30.0, 3), (25.0, 3), (20.0, 2), (40.0, 1), (10.0, 120)]:
+        db_session.add(
+            PriceRecord(
+                item_id=item.id,
+                price=price,
+                source="bing_shopping",
+                checked_at=now - dt.timedelta(days=days_ago),
+            )
+        )
+    db_session.commit()
+    first, last = (now - dt.timedelta(days=3)).date(), (now - dt.timedelta(days=1)).date()
+
+    output = hb("history", str(item.id), "--days", "90")
+
+    assert output.splitlines() == [
+        f"  Widget: lowest price each day, {first} to {last} (3 day(s) with prices)",
+        "    ▃▁█  $20.00 to $40.00",
+        f"    lowest in 90 days: $20.00 on {now - dt.timedelta(days=2):%Y-%m-%d} (bing_shopping)",
+        f"    all-time low: $10.00 on {now - dt.timedelta(days=120):%Y-%m-%d} (bing_shopping)",
+    ]
+
+
+def test_history_of_an_unknown_item(api_url):
+    result = CliRunner().invoke(cli, ["--url", api_url, "history", "999"])
+
+    assert result.exit_code == 1
+    assert "Item 999 not found." in result.output
+
+
 def _wait_for_the_run_to_end() -> None:
     """Return once no check of all items holds the run lock (fail after 5 s)."""
     if not scheduler_module._run_lock.acquire(timeout=5):
@@ -108,6 +143,10 @@ def test_add_list_update_check_and_remove_an_item(hb, db_session, stub_serpapi, 
         assert "  Widget: $9.99 (" in output
         assert "— 2 result(s)" in output
         assert db_session.query(PriceRecord).filter_by(item_id=item.id).count() == 2
+        # This check's own prices are the item's only ones, so they are both lows (#31).
+        today = dt.datetime.now(dt.UTC).date()
+        assert f"    lowest in 90 days: $9.99 on {today} (" in output
+        assert f"    all-time low: $9.99 on {today} (" in output
 
         output = hb("check")
         assert "Started a price check of all items in the background." in output

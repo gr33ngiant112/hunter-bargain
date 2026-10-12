@@ -53,6 +53,28 @@ def _clean(value: object) -> str:
     return "".join(c for c in str(value) if unicodedata.category(c) != "Cc")
 
 
+# Block characters for a sparkline, lowest to highest.
+_SPARKS = "▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: list[float]) -> str:
+    """One block per value, its height scaled between the lowest and the highest value."""
+    low, high = min(values), max(values)
+    if high == low:
+        return _SPARKS[3] * len(values)
+    return "".join(_SPARKS[round((v - low) / (high - low) * (len(_SPARKS) - 1))] for v in values)
+
+
+def _print_lows(lows: list[tuple[str, dict[str, Any] | None]]) -> None:
+    """Print each low that exists: its label, price, date and engine."""
+    for label, low in lows:
+        if low:
+            click.echo(
+                f"    {label}: ${low['price']:.2f} on {_clean(low['checked_at'])[:10]}"
+                f" ({_clean(low['source'])})"
+            )
+
+
 def _print_item(item: dict[str, Any]) -> None:
     target = f"${item['target_price']:.2f}" if item.get("target_price") else "—"
     keywords = item.get("keywords") or "—"
@@ -279,9 +301,56 @@ def check(ctx: click.Context, item_id: int | None) -> None:
             click.secho(f"  {name}: no prices, {len(engine_errors)} engine error(s)", fg="red")
         else:
             click.secho(f"  {name}: no results found", fg="yellow")
+        _print_lows(
+            [
+                ("lowest in 90 days", result.get("low_90_days")),
+                ("all-time low", result.get("all_time_low")),
+            ]
+        )
         # A failed engine may have missed a lower price, so its error shows either way.
         for error in engine_errors:
             click.echo(f"    engine error: {_clean(error)}")
+
+
+@cli.command()
+@click.argument("item_id", type=int)
+@click.option(
+    "--days",
+    type=click.IntRange(1, 3650),
+    default=90,
+    show_default=True,
+    help="How many days of price history to show.",
+)
+@click.pass_context
+def history(ctx: click.Context, item_id: int, days: int) -> None:
+    """Show an item's price history: its lowest price on each day, and its lows."""
+    resp = _request("GET", f"{_base_url(ctx)}/api/v1/items/{item_id}/stats?days={days}")
+
+    if resp.status_code == 404:
+        click.secho(f"Item {item_id} not found.", fg="red", err=True)
+        sys.exit(1)
+    if resp.status_code != 200:
+        click.secho(f"Error {resp.status_code}: {resp.text}", fg="red", err=True)
+        sys.exit(1)
+
+    stats = resp.json()
+    name = _clean(stats["item_name"])
+    per_day = stats["per_day"]
+    if not per_day:
+        click.echo(f"  {name}: no prices recorded in the last {days} days")
+    else:
+        lows = [day["low"] for day in per_day]
+        click.echo(
+            f"  {name}: lowest price each day, {per_day[0]['day']} to {per_day[-1]['day']}"
+            f" ({len(per_day)} day(s) with prices)"
+        )
+        click.echo(f"    {_sparkline(lows)}  ${min(lows):.2f} to ${max(lows):.2f}")
+    _print_lows(
+        [
+            (f"lowest in {days} days", stats["lowest_in_days"]),
+            ("all-time low", stats["all_time_low"]),
+        ]
+    )
 
 
 def _start_check_all(ctx: click.Context) -> None:

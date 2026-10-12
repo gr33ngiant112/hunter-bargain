@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
@@ -132,6 +132,38 @@ class PriceRecordResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PriceLow(BaseModel):
+    """An item's lowest recorded price over some period, and when it was recorded."""
+
+    price: float
+    currency: str
+    source: str
+    checked_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DailyPrices(BaseModel):
+    """The prices recorded for an item on one day (UTC)."""
+
+    day: date
+    low: float
+    median: float
+    count: int
+
+
+class PriceStats(BaseModel):
+    """GET /items/{id}/stats: an item's prices per day over the last `days` days, and its lows."""
+
+    item_id: int
+    item_name: str
+    days: int
+    # Oldest day first; days without a recorded price are left out.
+    per_day: list[DailyPrices]
+    lowest_in_days: PriceLow | None
+    all_time_low: PriceLow | None
+
+
 # ---------- Price check schemas ----------
 
 
@@ -157,6 +189,9 @@ class PriceCheckResult(BaseModel):
     # True when this check emailed an alert. False when no price met the target, when the last
     # alert already covers this price (no new low, cooldown not over: #9), or when sending failed.
     alert_sent: bool = False
+    # The item's lowest recorded prices, this check's included: in the last 90 days, and ever.
+    low_90_days: PriceLow | None = None
+    all_time_low: PriceLow | None = None
 
 
 class CheckAllStarted(BaseModel):

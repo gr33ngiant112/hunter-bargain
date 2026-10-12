@@ -114,7 +114,7 @@ Output:
 | 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
-| 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `status` — full CRUD from your terminal |
+| 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `history`, `status` — full CRUD from your terminal |
 | 🌐 REST API | FastAPI with Pydantic validation, auto-generated OpenAPI docs |
 | 🐳 Docker | Single-container deployment with health checks and volume persistence |
 | 📊 Price history | Every price observation persisted to SQLite for trend analysis |
@@ -133,8 +133,11 @@ hb ls
 # Update an item's target price
 hb update 1 -t 849.99
 
-# Run a price check (single item)
+# Run a price check (single item); also shows its lowest price in 90 days and all-time low
 hb check 1
+
+# Price history: the lowest price on each day as a sparkline, and the lows (default 90 days)
+hb history 1 --days 30
 
 # Start a price check of all items in the background (alerts are emailed; no prices printed)
 hb check
@@ -174,6 +177,8 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | `GET` | `/items/{id}` | Get a specific item |
 | `PATCH` | `/items/{id}` | Update an item |
 | `DELETE` | `/items/{id}` | Delete an item |
+| `GET` | `/items/{id}/prices` | The item's recorded prices, newest first. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
+| `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low |
 
 ### Price Checks
 

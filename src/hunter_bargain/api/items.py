@@ -1,13 +1,21 @@
-"""CRUD endpoints for tracked items."""
+"""CRUD endpoints for tracked items, and their price history."""
 
+from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from hunter_bargain.db import get_db
-from hunter_bargain.models import Item
-from hunter_bargain.schemas import ItemCreate, ItemResponse, ItemUpdate
+from hunter_bargain.models import Item, PriceRecord
+from hunter_bargain.schemas import (
+    ItemCreate,
+    ItemResponse,
+    ItemUpdate,
+    PriceRecordResponse,
+    PriceStats,
+)
+from hunter_bargain.services import history
 
 router = APIRouter(prefix="/items", tags=["items"])
 DbSession = Annotated[Session, Depends(get_db)]
@@ -41,6 +49,43 @@ def get_item(item_id: int, db: DbSession) -> Item:
     if not item:
         raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
     return item
+
+
+@router.get("/{item_id}/prices", response_model=list[PriceRecordResponse])
+def list_item_prices(
+    item_id: int,
+    db: DbSession,
+    since: datetime | None = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+) -> list[PriceRecord]:
+    """The item's recorded prices, newest first: at most `limit`, and only from `since` on.
+
+    A `since` without a time zone is read as UTC, the zone the prices are recorded in.
+    """
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
+    return history.recent_records(db, item.id, since=since, limit=limit)
+
+
+@router.get("/{item_id}/stats", response_model=PriceStats)
+def item_price_stats(
+    item_id: int, db: DbSession, days: Annotated[int, Query(ge=1, le=3650)] = 90
+) -> PriceStats:
+    """The item's low and median price on each day of the last `days` days, its lowest price in
+    that period, and its all-time low."""
+    item = db.query(Item).filter(Item.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=404, detail=f"Item {item_id} not found")
+    since = history.days_ago(days)
+    return PriceStats(
+        item_id=item.id,
+        item_name=item.name,
+        days=days,
+        per_day=history.daily_prices(db, item.id, since),
+        lowest_in_days=history.lowest_price(db, item.id, since),
+        all_time_low=history.lowest_price(db, item.id),
+    )
 
 
 @router.patch("/{item_id}", response_model=ItemResponse)

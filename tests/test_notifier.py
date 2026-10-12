@@ -1,5 +1,6 @@
 """Tests for the email notification service."""
 
+import datetime as dt
 import logging
 import os
 import smtplib
@@ -13,6 +14,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from hunter_bargain.config import Settings
+from hunter_bargain.schemas import PriceLow
 from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.notifier import send_price_alert
 
@@ -293,6 +295,43 @@ class TestAlertContent:
         plain, html_part = _sent_parts(server)
         assert "Source: google_shopping\n" in plain
         assert ">google_shopping</td>" in html_part
+
+    def test_lows_are_shown_after_the_target(self, smtp_settings, smtp_classes):
+        """The item's 90-day and all-time lows (#31)."""
+        server = _server(smtp_classes[0])
+        low_90_days = PriceLow(
+            price=47.5,
+            currency="USD",
+            source="bing_shopping",
+            checked_at=dt.datetime(2026, 10, 2, 9, 0, tzinfo=dt.UTC),
+        )
+        all_time_low = low_90_days.model_copy(
+            update={"price": 39.0, "checked_at": dt.datetime(2026, 3, 26, 9, 0, tzinfo=dt.UTC)}
+        )
+
+        assert send_price_alert(
+            item=_item(), result=_result(), low_90_days=low_90_days, all_time_low=all_time_low
+        )
+
+        plain, html_part = _sent_parts(server)
+        assert (
+            "Target: $60.00\nLowest in 90 days: $47.50 on 2026-10-02\n"
+            "All-time low: $39.00 on 2026-03-26\nSource: "
+        ) in plain
+        assert ">Lowest in 90 days</td><td " in html_part
+        assert ">$47.50 on 2026-10-02</td>" in html_part
+        assert ">All-time low</td><td " in html_part
+        assert ">$39.00 on 2026-03-26</td>" in html_part
+
+    def test_without_lows_no_low_is_shown(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=_result()) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "Target: $60.00\nSource: " in plain
+        assert "Lowest in 90 days" not in html_part
+        assert "All-time low" not in html_part
 
     @pytest.mark.parametrize("line_break", ["\r\n", "\n", "\r", "\u2028"])
     def test_line_break_in_merchant_adds_no_line(self, smtp_settings, smtp_classes, line_break):
