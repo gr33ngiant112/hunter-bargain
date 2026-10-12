@@ -61,8 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deprecation warning
 - A warning fails the test that raised it. CI also checks types with mypy, fails when the tests'
   branch coverage is under 85%, scans the code with Semgrep's Python and FastAPI rules, and lints
-  the workflows with zizmor and actionlint. The minimum SQLAlchemy version is 2.0.16: older
-  releases cause a deprecation warning on Python 3.12.
+  the workflows with zizmor and actionlint. Higher minimum versions: SQLAlchemy 2.0.16 (older
+  releases cause a deprecation warning on Python 3.12) and, for development, pytest-cov 7.0 (with
+  older releases, `pytest --cov` fails to combine the coverage of the tests' subprocesses).
 
 ### Removed
 
