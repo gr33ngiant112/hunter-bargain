@@ -114,7 +114,7 @@ Output:
 | 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
-| 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check` — full CRUD from your terminal |
+| 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `status` — full CRUD from your terminal |
 | 🌐 REST API | FastAPI with Pydantic validation, auto-generated OpenAPI docs |
 | 🐳 Docker | Single-container deployment with health checks and volume persistence |
 | 📊 Price history | Every price observation persisted to SQLite for trend analysis |
@@ -138,6 +138,10 @@ hb check 1
 
 # Start a price check of all items in the background (alerts are emailed; no prices printed)
 hb check
+
+# Show the last price check of all items: when it ran, how it ended, items checked, searches
+# used, engine errors (searches that failed) and alerts sent
+hb status
 
 # Remove an item (with confirmation)
 hb rm 1
@@ -178,6 +182,18 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | `POST` | `/prices/check/{id}` | Check prices for one item |
 | `POST` | `/prices/check-all` | Start a price check of all items in the background: 202 at once, or 409 while a check of all items (this endpoint's or the daily job's) is running. Results go to the price history, the log and alert emails |
 
+### Runs
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/runs` | The latest price checks of all items (the daily job's and `/prices/check-all`'s), newest first: `?limit=` (default 10, at most 100) |
+
+Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
+
+### Health
+
+`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items finished more than 26 hours ago. Until a check has succeeded (a new database), the 26 hours count from the app's start. After the app was down for more than a day, it answers 503 until the catch-up check, a minute after the start, succeeds. Docker Compose's healthcheck reads it.
+
 ### Example: Create an item
 
 ```bash
@@ -214,11 +230,12 @@ Response:
   "lowest_url": "https://www.google.com/shopping/product/...",
   "results_count": 5,
   "records": [...],
-  "engine_errors": []
+  "engine_errors": [],
+  "searches_used": 2
 }
 ```
 
-`engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
+`searches_used` counts the engines' searches that worked. `engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
 
 ## Architecture
 
@@ -232,7 +249,8 @@ src/hunter_bargain/
 ├── cli.py               # Click-based CLI (hb command)
 ├── api/
 │   ├── items.py         # CRUD: POST/GET/PATCH/DELETE /api/v1/items
-│   └── prices.py        # POST /api/v1/prices/check/{id}, /check-all
+│   ├── prices.py        # POST /api/v1/prices/check/{id}, /check-all
+│   └── runs.py          # GET /api/v1/runs: each price check of all items
 └── services/
     ├── searcher.py      # Multi-engine orchestrator + relevance filtering
     ├── notifier.py      # SMTP email alerts with HTML templates
@@ -301,7 +319,9 @@ docker compose up --build -d
 - Settings: the app gets the file `HB_ENV_FILE` names, e.g. `~/.config/hunter-bargain/hb.env` (mode 600),
   set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
   the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
-- Health check: `curl http://localhost:8000/health`
+- Health check: `curl http://localhost:8000/health` answers 503, with the reason, when the scheduler
+  is not running or no price check of all items has succeeded in 26 hours ([Health](#health));
+  `hb status` shows the last check
 - SQLite data persisted via Docker volume (`app-data`)
 - Each start migrates the database to the app's schema before it serves requests. Run one app
   process, as the image does (one uvicorn worker), so that two never migrate it at once, and back
