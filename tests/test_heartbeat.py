@@ -33,11 +33,13 @@ def heartbeat_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "heartbeat_url", SecretStr(HEARTBEAT_URL))
 
 
-def test_nothing_is_sent_while_heartbeat_url_is_empty():
+def test_nothing_is_sent_while_heartbeat_url_is_empty(caplog):
+    caplog.set_level(logging.DEBUG)
     sent: list[httpx.Request] = []
 
     assert send_heartbeat(_transport(sent)) is False
     assert sent == []
+    assert caplog.records == []  # off is not a failure
 
 
 def test_one_get_with_a_short_timeout(heartbeat_url, caplog):

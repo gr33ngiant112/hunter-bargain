@@ -12,6 +12,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -815,3 +816,13 @@ def test_searches_left_are_not_checked_after_a_run_that_an_error_ended(db_sessio
         _run_daily_job()
 
     check.assert_not_called()
+
+
+def test_longest_gap_across_a_daylight_saving_change_is_the_time_that_passes():
+    """New York's clocks go back an hour on November 1, 2026: that day's 09:00 run comes 25 hours
+    after the 31st's, which /health's limit allows for (tested with UTC in test_main.py)."""
+    trigger = CronTrigger.from_crontab("0 9 * * *", timezone="America/New_York")
+
+    gap = scheduler_module._longest_gap(trigger, _utc(28, 0))
+
+    assert gap == dt.timedelta(hours=25)
