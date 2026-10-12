@@ -2,6 +2,7 @@
 
 import datetime as dt
 import functools
+import json
 import logging
 import os
 import threading
@@ -10,9 +11,11 @@ from unittest.mock import patch
 
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
+from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+from test_searcher import SEARCH_ERROR_BODY
 
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.models import CheckRun, Item, PriceRecord
@@ -335,6 +338,21 @@ def _runs(db_session) -> list[tuple[str, dt.datetime, dt.datetime | None]]:
     return [(run.status, utc(run.started_at), utc(run.finished_at)) for run in runs]
 
 
+# A check_runs row's counts (#24), as _counts returns them.
+COUNTS = (
+    CheckRun.items_checked,
+    CheckRun.searches_used,
+    CheckRun.engine_errors,
+    CheckRun.alerts_sent,
+)
+
+
+def _counts(db_session) -> list[tuple[int | None, ...]]:
+    """Each check_runs row's counts: (items_checked, searches_used, engine_errors, alerts_sent)."""
+    db_session.expire_all()
+    return [tuple(row) for row in db_session.execute(select(*COUNTS).order_by(CheckRun.id))]
+
+
 def _messages(caplog, level: int) -> list[str]:
     return [
         record.getMessage()
@@ -396,6 +414,7 @@ def test_check_with_no_items_is_recorded_as_succeeded(db_session, monkeypatch, r
         run_all()
 
     assert _runs(db_session) == [("succeeded", _utc(6, 9), _utc(6, 9))]
+    assert _counts(db_session) == [(0, 0, 0, 0)]
 
 
 # Listing the items fails, as with a locked database: an error that ends the whole run.
@@ -413,6 +432,7 @@ def test_daily_job_that_an_error_ends_is_recorded_as_failed(db_session, three_it
         _run_daily_job()
 
     assert _runs(db_session) == [("failed", _utc(6, 9), _utc(6, 9, 1))]
+    assert _counts(db_session) == [(0, 0, 0, 0)]  # recorded however the run ends
 
 
 def test_check_all_run_that_an_error_ends_is_recorded_as_failed(
@@ -429,6 +449,7 @@ def test_check_all_run_that_an_error_ends_is_recorded_as_failed(
 
     assert _messages(caplog, logging.ERROR) == ["Price check of all items failed"]
     assert _runs(db_session) == [("failed", _utc(6, 9), _utc(6, 9, 1))]
+    assert _counts(db_session) == [(0, 0, 0, 0)]  # recorded however the run ends
 
 
 def test_scheduler_job_defaults_are_explicit():
@@ -568,3 +589,63 @@ def test_run_times_read_back_from_sqlite_are_taken_as_utc(
     jobs = jobs_at(now)
 
     assert ("catch_up_price_check" in jobs) is caught_up
+
+
+# #24: each check of all items records what it did when it ends: the items whose check ran to the
+# end, the engine searches that worked and those that failed, and the alerts sent.
+
+# What run_price_check returns when SerpAPI refuses both engines' searches.
+QUOTA_ERRORS = [
+    f"{engine}: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run"
+    " out of searches."
+    for engine in ("google_shopping", "bing_shopping")
+]
+
+
+@both_entry_points
+def test_run_records_its_counts_when_it_ends(db_session, three_items, run_all):
+    """The first item's check searched both engines and sent an alert, the second one's check
+    failed, and SerpAPI refused both searches of the third: 2 items, 2 searches, 2 engine errors
+    and 1 alert. While the run lasts, its counts are not known yet."""
+    first, second, third = three_items
+    during_the_run: list[tuple[object, ...]] = []
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        if item.id == first:
+            with _sessions(db_session)() as other:
+                during_the_run.extend(tuple(row) for row in other.execute(select(*COUNTS)))
+            return _empty_result(item).model_copy(update={"searches_used": 2, "alert_sent": True})
+        if item.id == second:
+            raise RuntimeError("database is locked")
+        return _empty_result(item).model_copy(update={"engine_errors": QUOTA_ERRORS})
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+    ):
+        run_all()
+
+    assert during_the_run == [(None, None, None, None)]
+    assert _counts(db_session) == [(2, 2, 2, 1)]
+    assert [status for status, _, _ in _runs(db_session)] == ["succeeded"]
+
+
+def test_serpapi_error_response_is_recorded_as_an_engine_error(
+    db_session, stub_serpapi, monkeypatch
+):
+    """The real check of an item, its searches answered by the local stub SerpAPI: Google Shopping
+    finds it at $9.99, under its $10 target, and SerpAPI answers Bing Shopping's search with its
+    documented error (HTTP 200, search status Error)."""
+    monkeypatch.setattr(settings, "serpapi_key", SecretStr("test-key"))
+    stub_serpapi.bodies["bing_shopping"] = json.dumps(SEARCH_ERROR_BODY)
+    db_session.add(Item(name="Widget", notify_email="a@x.com", target_price=10.0))
+    db_session.commit()
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.searcher.send_price_alert", return_value=True) as send,
+    ):
+        _run_daily_job()
+
+    send.assert_called_once()
+    assert _counts(db_session) == [(1, 1, 1, 1)]

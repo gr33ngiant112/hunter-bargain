@@ -80,8 +80,8 @@ class PriceRecord(Base):
 class CheckRun(Base):
     """One price check of all items, by the daily job or POST /prices/check-all.
 
-    The scheduler reads the last successful run at startup to catch up a missed daily check
-    (services/scheduler.py).
+    The scheduler reads the last successful run at startup to catch up a missed daily check, and
+    GET /health reads it to tell whether the daily check still happens (services/scheduler.py).
     """
 
     __tablename__ = "check_runs"
@@ -92,6 +92,14 @@ class CheckRun(Base):
     # "running" until the run ends, then "succeeded" or "failed". A run the app did not live to
     # finish stays "running".
     status: Mapped[str] = mapped_column(String(20), default="running")
+    # What the run did, recorded when it ends: the items whose check ran to the end, the engine
+    # searches that worked and those that failed (an engine that could not search for an item,
+    # e.g. a SerpAPI error response), and the alert emails sent. None while the run lasts, for a
+    # run the app did not live to finish, and for runs recorded before these columns existed.
+    items_checked: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    searches_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    engine_errors: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alerts_sent: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     def __repr__(self) -> str:
         return f"<CheckRun id={self.id} status={self.status!r} started_at={self.started_at}>"

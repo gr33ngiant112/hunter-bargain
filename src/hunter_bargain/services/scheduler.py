@@ -10,6 +10,7 @@ import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -19,6 +20,7 @@ from sqlalchemy import func, select, update
 from hunter_bargain.config import settings
 from hunter_bargain.db import SessionLocal
 from hunter_bargain.models import CheckRun, Item
+from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services.searcher import run_price_check
 
 logger = logging.getLogger(__name__)
@@ -91,29 +93,48 @@ def _run_check_all() -> None:
         _run_lock.release()
 
 
+@dataclass
+class _RunCounts:
+    """What a check of all items did: the counts its check_runs row gets when it ends."""
+
+    items_checked: int = 0
+    searches_used: int = 0
+    engine_errors: int = 0
+    alerts_sent: int = 0
+
+    def add(self, result: PriceCheckResult) -> None:
+        """Count one item's check that ran to the end."""
+        self.items_checked += 1
+        self.searches_used += result.searches_used
+        self.engine_errors += len(result.engine_errors)
+        self.alerts_sent += int(result.alert_sent)
+
+
 @contextmanager
-def _recorded_run() -> Iterator[None]:
+def _recorded_run() -> Iterator[_RunCounts]:
     """Record the check of all items that runs in the block as a check_runs row.
 
     The row is committed as "running" before the block runs. When the block ends it gets its
-    finished_at and "succeeded", or "failed" if an exception ended the block. A run the process
-    does not live to finish stays "running". Each write uses a short session of its own.
+    finished_at, "succeeded" (or "failed" if an exception ended the block) and the counts the
+    block added to the _RunCounts it was given. A run the process does not live to finish stays
+    "running", without counts. Each write uses a short session of its own.
     """
     with SessionLocal() as db:
         run = CheckRun(started_at=_now(), status="running")
         db.add(run)
         db.commit()
         run_id = run.id
+    counts = _RunCounts()
     status = "failed"
     try:
-        yield
+        yield counts
         status = "succeeded"
     finally:
         with SessionLocal() as db:
             db.execute(
                 update(CheckRun)
                 .where(CheckRun.id == run_id)
-                .values(finished_at=_now(), status=status)
+                .values(finished_at=_now(), status=status, **asdict(counts))
             )
             db.commit()
 
@@ -126,7 +147,7 @@ def _check_all_items() -> None:
     check rolls back only its own session, so neither stops the rest of the run.
     """
     logger.info("Price check of all items starting...")
-    with _recorded_run():
+    with _recorded_run() as counts:
         with SessionLocal() as db:
             item_ids = list(db.scalars(select(Item.id).order_by(Item.id)))
         if not item_ids:
@@ -134,22 +155,25 @@ def _check_all_items() -> None:
             return
 
         for item_id in item_ids:
-            _check_item(item_id)
+            result = _check_item(item_id)
+            if result is not None:
+                counts.add(result)
     logger.info("Price check of all items complete.")
 
 
-def _check_item(item_id: int) -> None:
-    """Check one item in a session of its own; a failure is logged, and closing the session
-    at the end of the with block rolls back whatever the failed check left uncommitted."""
+def _check_item(item_id: int) -> PriceCheckResult | None:
+    """Check one item in a session of its own and return the result; None if the item is gone
+    or its check failed. A failure is logged, and closing the session at the end of the with
+    block rolls back whatever the failed check left uncommitted."""
     with SessionLocal() as db:
         try:
             item = db.get(Item, item_id)
         except Exception:
             logger.exception("Could not load item %d for its price check", item_id)
-            return
+            return None
         if item is None:
             logger.info("Item %d was deleted before its check — skipping.", item_id)
-            return
+            return None
         # Read now: after a failed commit the item's attributes can no longer be loaded.
         name = item.name
         try:
@@ -163,6 +187,8 @@ def _check_item(item_id: int) -> None:
             )
         except Exception:
             logger.exception("Price check failed for item %d (%r)", item_id, name)
+            return None
+        return result
 
 
 def start_scheduler() -> None:

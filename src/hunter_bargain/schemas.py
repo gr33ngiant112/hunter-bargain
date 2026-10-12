@@ -151,6 +151,9 @@ class PriceCheckResult(BaseModel):
     # hourly limit reached: ...". Built from the engine name, HTTP status and SerpAPI's error
     # string only, never from exception text, which can carry the API key.
     engine_errors: list[str] = []
+    # The engines' searches that worked, one per engine; an engine that could not search is in
+    # engine_errors instead. A check of all items adds these up in its check_runs row.
+    searches_used: int = 0
     # True when this check emailed an alert. False when no price met the target, when the last
     # alert already covers this price (no new low, cooldown not over: #9), or when sending failed.
     alert_sent: bool = False
