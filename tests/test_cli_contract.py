@@ -37,10 +37,12 @@ def api_url(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[st
     def _override_get_db() -> Iterator[Session]:
         yield db_session
 
-    app.dependency_overrides[get_db] = _override_get_db
     sessions = sessionmaker(bind=db_session.get_bind(), autocommit=False, autoflush=False)
     server = uvicorn.Server(uvicorn.Config(app, log_config=None, access_log=False, ws="none"))
     with ExitStack() as stack:
+        # Cleared however the fixture ends, uvicorn failing to start included.
+        app.dependency_overrides[get_db] = _override_get_db
+        stack.callback(app.dependency_overrides.clear)
         for target in ("init_db", "start_scheduler", "stop_scheduler"):
             stack.enter_context(patch(f"hunter_bargain.main.{target}"))
         stack.enter_context(patch("hunter_bargain.services.scheduler.SessionLocal", sessions))
@@ -58,7 +60,6 @@ def api_url(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[st
         finally:
             server.should_exit = True
             thread.join(timeout=10)
-    app.dependency_overrides.clear()
 
 
 @pytest.fixture
