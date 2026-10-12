@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was report-only
 - The tests build Starlette's TestClient on httpx2, a new dev dependency, so they run without a
   deprecation warning
+- A warning fails the test that raised it. CI also checks types with mypy, fails when the tests'
+  branch coverage is under 85%, scans the code with Semgrep's Python and FastAPI rules, and lints
+  the workflows with zizmor and actionlint. The minimum SQLAlchemy version is 2.0.16: older
+  releases cause a deprecation warning on Python 3.12.
 
 ### Removed
 
