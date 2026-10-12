@@ -2,16 +2,14 @@
 
 import datetime as dt
 import logging
-import os
 import smtplib
 import ssl
-import subprocess
-import sys
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from test_startup import _start_app
 
 from hunter_bargain.config import Settings
 from hunter_bargain.schemas import PriceLow
@@ -528,15 +526,8 @@ class TestSmtpSettings:
             Settings(_env_file=None)
 
     def test_app_refuses_to_start_with_invalid_smtp_security(self, tmp_path):
-        """config.settings is built on import, so uvicorn cannot load the app with a bad value."""
-        result = subprocess.run(
-            [sys.executable, "-c", "import hunter_bargain.main"],
-            cwd=tmp_path,  # no .env file here
-            env={**os.environ, "SMTP_SECURITY": "starttls"},
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        """The app reads its settings as it starts, so it does not start with a bad value."""
+        result = _start_app(tmp_path, SMTP_SECURITY="starttls")  # no .env file in tmp_path
 
         assert result.returncode != 0
         assert "validation error for Settings" in result.stderr

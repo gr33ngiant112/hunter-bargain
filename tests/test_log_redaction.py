@@ -1,13 +1,12 @@
 """The SerpAPI key stays out of logs and engine errors (#5).
 
 No test here attaches a logging filter to pytest's caplog handler. The app's own
-logging setup runs when hunter_bargain.main is imported, as uvicorn imports it,
-and that setup is what keeps the key out of caplog.text.
+logging setup, which the app runs as it starts and conftest.py runs for the tests,
+is what keeps the key out of caplog.text.
 """
 
 from __future__ import annotations
 
-import importlib
 import io
 import json
 import logging
@@ -26,9 +25,6 @@ from hunter_bargain.models import Item
 from hunter_bargain.services.engines import base
 from hunter_bargain.services.engines.serpapi_shopping import SerpApiShoppingEngine
 from hunter_bargain.services.searcher import run_price_check
-
-# Import the app module as uvicorn does; that runs the app's logging setup.
-importlib.import_module("hunter_bargain.main")
 
 FAKE_KEY = "fake-serpapi-key-for-tests"
 ENGINES = ["google_shopping", "bing_shopping"]
@@ -223,12 +219,16 @@ def test_serpapi_key_is_a_secret(monkeypatch):
 
 
 def test_app_entry_point_keeps_key_out_of_logs(stub_serpapi, tmp_path):
-    # A fresh interpreter imports the app as uvicorn does, with LOG_LEVEL=debug. Under
-    # pytest the root logger already has handlers, so main.py's basicConfig() is a no-op;
-    # here it runs and writes to stderr.
+    # A fresh interpreter imports the app as uvicorn does, with LOG_LEVEL=debug, and sets up
+    # logging as the app does when it starts. Under pytest the root logger already has
+    # handlers, so configure_logging's basicConfig() is a no-op; here it runs and writes to
+    # stderr.
     script = (
         "import logging, sys\n"
         "import hunter_bargain.main\n"
+        "from hunter_bargain.config import settings\n"
+        "from hunter_bargain.logging_config import configure_logging\n"
+        "configure_logging(settings.log_level)\n"
         "from hunter_bargain.services.engines import base\n"
         "from hunter_bargain.services.engines.serpapi_shopping import SerpApiShoppingEngine\n"
         "base.SERPAPI_BASE_URL = sys.argv[1]\n"

@@ -55,3 +55,20 @@ def test_a_connection_to_another_machine_is_blocked():
     # 192.0.2.1 is in TEST-NET-1 (RFC 5737), reserved for documentation.
     with pytest.raises(RuntimeError, match="tests may connect only to loopback"):
         socket.create_connection(("192.0.2.1", 443), timeout=1)
+
+
+def test_an_invalid_env_file_does_not_reach_the_tests(tmp_path):
+    """#33: the tests never read .env, so one the app could not start with does not stop them."""
+    (tmp_path / ".env").write_text("SMTP_PORT=notanumber\nSERPAPI_KEY=bogus-key\n")
+    test = f"{Path(__file__).resolve()}::test_settings_are_the_defaults"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", test],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout

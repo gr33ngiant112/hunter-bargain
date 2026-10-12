@@ -1,12 +1,9 @@
 """Tests for the settings: ALERT_RECIPIENTS parsing, startup validation and matching, and the
 ranges of the alert policy settings."""
 
-import os
-import subprocess
-import sys
-
 import pytest
 from pydantic import ValidationError
+from test_startup import _start_app
 
 from hunter_bargain.config import Settings
 
@@ -34,15 +31,8 @@ def test_invalid_alert_recipient_fails_validation(monkeypatch):
 
 
 def test_app_refuses_to_start_with_invalid_alert_recipient(tmp_path):
-    """config.settings is built on import, so uvicorn cannot load the app with a bad address."""
-    result = subprocess.run(
-        [sys.executable, "-c", "import hunter_bargain.main"],
-        cwd=tmp_path,  # no .env file here
-        env={**os.environ, "ALERT_RECIPIENTS": "owner@example.com,not-an-email"},
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    """The app reads its settings as it starts, so it does not start with a bad address."""
+    result = _start_app(tmp_path, ALERT_RECIPIENTS="owner@example.com,not-an-email")  # no .env
 
     assert result.returncode != 0
     assert "validation error for Settings" in result.stderr

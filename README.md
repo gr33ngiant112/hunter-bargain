@@ -330,7 +330,7 @@ docker compose up --build -d
 
 - Settings: the app gets the file `HB_ENV_FILE` names, e.g. `~/.config/hunter-bargain/hb.env` (mode 600),
   set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
-  the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
+  the checkout's own `.env` is what uvicorn and coding agents that start the app in the checkout load (the tests don't read it).
 - Health check: `curl http://localhost:8000/health` answers 503, with the reason, when the scheduler
   is not running or no price check of all items has succeeded in 26 hours (with the default daily
   schedule; see [Health](#health));

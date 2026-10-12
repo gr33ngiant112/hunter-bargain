@@ -61,8 +61,8 @@ cp .env.example .env
 ```
 
 Keep real API keys and SMTP credentials out of the checkout, in the file `HB_ENV_FILE` names
-(README "Deployment"): anything run in the checkout, tests and coding agents included, loads its
-`.env`.
+(README "Deployment"): anything that starts the app or reads its settings in the checkout, coding
+agents included, loads its `.env`. The tests don't: each one gets the default settings.
 
 ### Run Tests
 

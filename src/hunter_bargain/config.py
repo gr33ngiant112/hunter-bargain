@@ -1,7 +1,8 @@
 """Application configuration loaded from environment variables."""
 
+import functools
 import string
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import EmailStr, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode
@@ -113,5 +114,26 @@ class Settings(BaseSettings):
         }
 
 
-# Singleton — import this wherever configuration is needed.
-settings = Settings()
+@functools.cache
+def get_settings() -> Settings:
+    """The app's settings, read from the environment and .env on first use (#33).
+
+    Importing the package reads neither: the app reads them as it starts (main.lifespan), and an
+    invalid setting stops it there.
+    """
+    return Settings()
+
+
+class _LazySettings:
+    """Every attribute read and write goes to get_settings(), which the first one builds."""
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_settings(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(get_settings(), name, value)
+
+
+# Import this wherever configuration is needed. It reads nothing until a setting is first used,
+# and tests change a setting with monkeypatch.setattr(settings, ...).
+settings = cast(Settings, _LazySettings())
