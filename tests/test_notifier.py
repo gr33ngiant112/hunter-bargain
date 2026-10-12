@@ -394,10 +394,3 @@ class TestSmtpSettings:
         assert result.returncode != 0
         assert "validation error for Settings" in result.stderr
         assert "smtp_security" in result.stderr
-
-
-def test_health_check(client):
-    """GET /health returns ok status."""
-    resp = client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}

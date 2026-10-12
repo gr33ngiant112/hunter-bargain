@@ -1,6 +1,9 @@
 """Shared test fixtures."""
 
+import ipaddress
 import json
+import logging
+import os
 import socket
 import threading
 from collections.abc import Iterator
@@ -16,7 +19,7 @@ from serpapi import SerpApiClient
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from hunter_bargain.config import settings
+from hunter_bargain.config import Settings, settings
 from hunter_bargain.db import Base, create_db_engine, get_db
 from hunter_bargain.main import app
 
@@ -31,6 +34,80 @@ API_TEST_RECIPIENTS = [
     "u@x.com",
     "w@x.com",
 ]
+
+
+class NetworkBlockedError(RuntimeError):
+    """A test tried to connect to another machine."""
+
+
+def _on_this_machine(address: Any) -> bool:
+    """Whether a socket address is on this machine: a Unix socket's path or a loopback host."""
+    if not isinstance(address, tuple):
+        return True
+    host = address[0]
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test reaches the network: a connection to another machine raises NetworkBlockedError.
+
+    The socket is closed first, so the error is the test's only failure. The error is not an
+    OSError, so code that handles network errors doesn't mistake it for one and carry on.
+    """
+    connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def check(sock: socket.socket, address: Any) -> None:
+        if not _on_this_machine(address):
+            sock.close()
+            raise NetworkBlockedError(f"tests may connect only to loopback, not to {address!r}")
+
+    def guarded_connect(sock: socket.socket, address: Any) -> None:
+        check(sock, address)
+        connect(sock, address)
+
+    def guarded_connect_ex(sock: socket.socket, address: Any) -> int:
+        check(sock, address)
+        return connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+
+
+@pytest.fixture(autouse=True)
+def _default_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Every test starts from the default settings, whatever .env or the environment holds.
+
+    The app's `settings` read .env and the environment once, when this file imported the app.
+    This sets each of them back to its default and removes the environment's settings, so a
+    `Settings(_env_file=None)` a test builds gets the defaults too. A test changes a setting
+    with monkeypatch.
+
+    main.py also set the log levels from LOG_LEVEL then (configure_logging): the root logger
+    and urllib3 get the levels the default LOG_LEVEL gives them, and their own levels back after
+    the test.
+    """
+    names = Settings.model_fields
+    for key in list(os.environ):
+        if key.lower() in names:
+            monkeypatch.delenv(key)
+    defaults = Settings(_env_file=None)
+    for name in names:
+        monkeypatch.setattr(settings, name, getattr(defaults, name))
+
+    root, urllib3 = logging.getLogger(), logging.getLogger("urllib3")
+    saved = root.level, urllib3.level
+    level = getattr(logging, defaults.log_level.upper())
+    root.setLevel(level)
+    urllib3.setLevel(max(level, logging.WARNING))
+    yield
+    root.setLevel(saved[0])
+    urllib3.setLevel(saved[1])
 
 
 @pytest.fixture
