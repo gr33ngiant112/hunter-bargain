@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from hunter_bargain.config import settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.services import history
 from hunter_bargain.services.engines.base import SearchResult
@@ -198,3 +199,70 @@ def test_a_new_low_is_its_own_90_day_and_all_time_low(db_session):
     assert result.low_90_days is not None and result.all_time_low is not None
     assert (result.low_90_days.price, result.low_90_days.source) == (12.0, "fake_engine")
     assert result.all_time_low == result.low_90_days
+
+
+# #29: the lows leave out merchants that may not alert, as the alert does. A record saved before
+# merchants were stored has none, and counts as a listing that names no merchant.
+
+
+@pytest.fixture
+def merchants(db_session, frozen_now):
+    """An item's prices: a denylist candidate's $5, Walmart's $8, and an old record's $6 that
+    has no merchant."""
+    item = _add_item(db_session)
+    for price, merchant, checked_at in [
+        (5.00, "Scam Shop", _at(12, 9)),
+        (8.00, "Walmart", _at(12, 9)),
+        (6.00, None, _at(2, 9)),
+    ]:
+        db_session.add(
+            PriceRecord(
+                item_id=item.id,
+                price=price,
+                source="google_shopping",
+                merchant=merchant,
+                checked_at=checked_at,
+            )
+        )
+    db_session.commit()
+    return item
+
+
+@pytest.mark.parametrize(
+    ("denylist", "allowlist", "low"),
+    [
+        ([], [], 5.00),
+        # The old record without a merchant counts like a listing that names none...
+        (["Scam Shop"], [], 6.00),
+        # ...which an allowlist leaves out.
+        ([], ["Walmart"], 8.00),
+        (["scam  shop"], ["Walmart", "Scam Shop"], 8.00),
+        (["Scam Shop", "Walmart"], ["Scam Shop", "Walmart"], None),
+    ],
+)
+def test_lows_leave_out_merchants_that_may_not_alert(
+    db_session, merchants, monkeypatch, denylist, allowlist, low
+):
+    monkeypatch.setattr(settings, "merchant_denylist", denylist)
+    monkeypatch.setattr(settings, "merchant_allowlist", allowlist)
+
+    all_time = history.lowest_price(db_session, merchants.id)
+    in_90_days = history.lowest_price(db_session, merchants.id, since=history.days_ago(90))
+
+    assert (all_time.price if all_time else None) == low
+    assert (in_90_days.price if in_90_days else None) == low
+
+
+def test_stats_lows_leave_out_a_denylisted_merchant(client, db_session, merchants, monkeypatch):
+    monkeypatch.setattr(settings, "merchant_denylist", ["Scam Shop"])
+
+    stats = client.get(f"/api/v1/items/{merchants.id}/stats", params={"days": 30}).json()
+
+    assert (stats["lowest_in_days"]["price"], stats["all_time_low"]["price"]) == (6.0, 6.0)
+    # The prices themselves are all still listed, and name their merchant.
+    prices = client.get(f"/api/v1/items/{merchants.id}/prices").json()
+    assert [(p["price"], p["merchant"]) for p in prices] == [
+        (8.0, "Walmart"),
+        (5.0, "Scam Shop"),
+        (6.0, None),
+    ]

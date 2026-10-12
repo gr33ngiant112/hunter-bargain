@@ -64,6 +64,20 @@ def _price_lows(
     return [(label, f"${low.price:.2f} on {low.checked_at:%Y-%m-%d}") for label, low in lows if low]
 
 
+def _listing_details(result: SearchResult) -> list[tuple[str, str]]:
+    """The listing's rating, review count and sellers to show, as (label, value) pairs, e.g.
+    ("Rating", "4.6 out of 5 from 13,000 reviews"); only what the listing gives (#29)."""
+    details: list[tuple[str, str]] = []
+    if result.rating is not None:
+        reviews = f" from {result.reviews} reviews" if result.reviews else ""
+        details.append(("Rating", f"{result.rating:g} out of 5{reviews}"))
+    elif result.reviews:
+        details.append(("Reviews", result.reviews))
+    if result.multiple_sources:
+        details.append(("Sellers", "One of several sellers"))
+    return details
+
+
 def _verify_merchant_warning() -> str:
     """What an alert says about a price far below the check's other prices (#29)."""
     return (
@@ -87,10 +101,13 @@ def _build_html_body(
     target = _escape(f"${item.target_price:.2f}")
     source = _escape(_source_label(result))
     cell = "padding: 8px; border: 1px solid #ddd;"
-    lows_html = "".join(
-        f'\n            <tr><td style="{cell} font-weight: bold;">{_escape(label)}</td>'
-        f'<td style="{cell}">{_escape(value)}</td></tr>'
-        for label, value in lows
+    lows_html, details_html = (
+        "".join(
+            f'\n            <tr><td style="{cell} font-weight: bold;">{_escape(label)}</td>'
+            f'<td style="{cell}">{_escape(value)}</td></tr>'
+            for label, value in rows
+        )
+        for rows in (lows, _listing_details(result))
     )
 
     warning_html = ""
@@ -139,7 +156,7 @@ def _build_html_body(
             <tr>
                 <td style="padding: 8px; border: 1px solid #ddd; font-weight: bold;">Source</td>
                 <td style="padding: 8px; border: 1px solid #ddd;">{source}</td>
-            </tr>
+            </tr>{details_html}
         </table>
         {link_html}
         <hr style="border: none; border-top: 1px solid #eee; margin: 24px 0;">
@@ -235,7 +252,8 @@ def send_price_alert(
             f"Target: ${item.target_price:.2f}\n"
             + "".join(f"{label}: {value}\n" for label, value in lows)
             + f"Source: {_source_label(result)}\n"
-            f"Link: {_link_url(result.url) or 'N/A'}\n"
+            + "".join(f"{label}: {value}\n" for label, value in _listing_details(result))
+            + f"Link: {_link_url(result.url) or 'N/A'}\n"
         )
         msg.attach(MIMEText(plain, "plain"))
         msg.attach(MIMEText(_build_html_body(item, result, lows, verify_merchant), "html"))

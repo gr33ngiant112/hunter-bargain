@@ -128,6 +128,11 @@ class PriceRecordResponse(BaseModel):
     url: str | None
     title: str | None
     checked_at: datetime
+    # The listing's seller, the item's rating out of 5 and its review count as text (#29); None
+    # when the listing gave none, and for records saved before they were stored.
+    merchant: str | None = None
+    rating: float | None = None
+    reviews: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -174,8 +179,13 @@ class PriceCheckResult(BaseModel):
     item_name: str
     lowest_price: float | None
     lowest_source: str | None
-    # Seller of the lowest-priced listing (Google Shopping source, Bing seller); not stored.
+    # Seller of the lowest-priced listing (Google Shopping source, Bing seller).
     lowest_merchant: str | None = None
+    # That listing's item rating out of 5 and review count (e.g. "13,000" or "5K+"), and whether
+    # more than one seller has the item (Google Shopping only), when the listing says (#29).
+    lowest_rating: float | None = None
+    lowest_reviews: str | None = None
+    lowest_multiple_sources: bool = False
     lowest_url: str | None
     results_count: int
     records: list[PriceRecordResponse]

@@ -67,6 +67,11 @@ class SearchResult:
         condition: Condition of a second-hand offer (Google Shopping
             ``second_hand_condition``, e.g. "used" or "refurbished"); None when the
             row gives none.  Bing rows have no condition field.
+        rating: The item's rating out of 5 (``rating``), or None.
+        reviews: The item's review count as text, e.g. "13,000" (Google Shopping
+            sends a number) or "5K+" (Bing sends a string), or None.
+        multiple_sources: True when Google Shopping says more than one seller has
+            the item (``multiple_sources``).  Bing rows have no such field.
     """
 
     title: str
@@ -77,6 +82,9 @@ class SearchResult:
     extensions: tuple[str, ...] | None = None
     merchant: str | None = None
     condition: str | None = None
+    rating: float | None = None
+    reviews: str | None = None
+    multiple_sources: bool = False
 
 
 def is_usd_price(price: object) -> bool:
