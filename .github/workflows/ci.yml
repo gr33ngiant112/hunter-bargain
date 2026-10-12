@@ -38,8 +38,12 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
+      # The files to check (src) are set in pyproject.toml, as for the pre-commit hook.
+      - name: Type check
+        run: mypy
+      # Branch coverage of the package (pyproject.toml): under 85% fails the job.
       - name: Test
-        run: pytest -q
+        run: pytest -q --cov
       # An empty database migrates to head, and the models match it: no migration is missing.
       - name: Migrations
         env:
