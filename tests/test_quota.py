@@ -106,7 +106,7 @@ def test_refused_connection_raises_engine_error(refused_serpapi):
     with pytest.raises(EngineError) as raised:
         fetch_serpapi_account(FAKE_KEY)
 
-    assert str(raised.value) == "request failed (ConnectionError)"
+    assert str(raised.value) == "request failed (ConnectError)"
     assert FAKE_KEY not in str(raised.value)
 
 

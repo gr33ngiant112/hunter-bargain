@@ -10,8 +10,9 @@ import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 
-# Seconds to wait for the server's answer. A single check searches two engines in turn, and the
-# server gives each SerpAPI request up to 20 s, so a slow but healthy check can take about 40 s.
+# Seconds to wait for the server's answer. A single check searches both engines at the same time,
+# and the server gives each SerpAPI request up to 20 s, so a slow but healthy check can take
+# about 20 s.
 DEFAULT_TIMEOUT = 60.0
 
 

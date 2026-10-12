@@ -1,11 +1,12 @@
 """Logging setup for the app, including SerpAPI key redaction.
 
 SerpAPI takes its key as a URL query parameter, so request URLs carry it into
-urllib3's DEBUG records and into requests/urllib3 exception text. Redaction runs
-in the log record factory: each record, from any logger, is redacted when it is
-created and before any handler sees it. That covers the root handler set up here
-as well as handlers the app does not own (uvicorn's, pytest's caplog) or that are
-added later, which a ``logging.Filter`` on the root handler would miss.
+httpx's INFO record of each request and into exception text that quotes the URL
+(httpx's HTTPStatusError does). Redaction runs in the log record factory: each
+record, from any logger, is redacted when it is created and before any handler
+sees it. That covers the root handler set up here as well as handlers the app
+does not own (uvicorn's, pytest's caplog) or that are added later, which a
+``logging.Filter`` on the root handler would miss.
 """
 
 from __future__ import annotations
@@ -74,9 +75,9 @@ def configure_logging(level_name: str) -> None:
     """Log to stderr at *level_name* and keep the SerpAPI key out of every log record."""
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    # urllib3 logs every request URL, key included, at DEBUG. httpx logs each request's URL at
-    # INFO, and HEARTBEAT_URL's holds its monitor's token; httpcore, under httpx, logs at DEBUG.
-    for name in ("urllib3", "httpx", "httpcore"):
+    # httpx logs every request URL at INFO: a SerpAPI URL holds the key, and HEARTBEAT_URL holds
+    # its monitor's token. httpcore, under httpx, logs at DEBUG.
+    for name in ("httpx", "httpcore"):
         logging.getLogger(name).setLevel(max(level, logging.WARNING))
     factory = logging.getLogRecordFactory()
     if not isinstance(factory, _RedactingRecordFactory):

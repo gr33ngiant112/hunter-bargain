@@ -101,10 +101,12 @@ def test_heartbeat_url_is_a_secret(monkeypatch):
 
 
 def test_httpx_and_httpcore_logs_are_capped_at_warning():
-    """httpx logs each request's URL at INFO, whatever LOG_LEVEL is; urllib3 is capped the same."""
-    names = ("urllib3", "httpx", "httpcore")
+    """httpx logs each request's URL at INFO, whatever LOG_LEVEL is."""
+    names = ("httpx", "httpcore")
     saved = {name: logging.getLogger(name).level for name in names}
     try:
+        for name in names:  # conftest.py has already set httpx's level
+            logging.getLogger(name).setLevel(logging.NOTSET)
         configure_logging("debug")
         assert {name: logging.getLogger(name).level for name in names} == dict.fromkeys(
             names, logging.WARNING
