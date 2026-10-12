@@ -105,6 +105,8 @@ def test_httpx_and_httpcore_logs_are_capped_at_warning():
     names = ("httpx", "httpcore")
     saved = {name: logging.getLogger(name).level for name in names}
     try:
+        for name in names:  # conftest.py has already set httpx's level
+            logging.getLogger(name).setLevel(logging.NOTSET)
         configure_logging("debug")
         assert {name: logging.getLogger(name).level for name in names} == dict.fromkeys(
             names, logging.WARNING
