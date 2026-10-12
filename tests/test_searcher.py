@@ -294,6 +294,7 @@ class TestParsePrice:
             ("$1,299", 1299.0),
             ("$1299", 1299.0),
             ("$1,234,567.89", 1234567.89),
+            ("$100,000", 100000.0),
             ("$29.9", 29.9),
             ("$0.99", 0.99),
             (" $5.88 ", 5.88),
@@ -311,6 +312,7 @@ class TestParsePrice:
             "$1,29",
             "$1.299",  # 1,299 dollars with a dot between thousands, or 1.299 dollars
             "$1,2999.00",  # a thousands group of four digits, read as 12999.0 before #30
+            "$0,299",  # a comma decimal again: thousands groups can't follow a 0, read as 299.0
             "£1,299",
             "US$1,299.00",
             "$1e999",
