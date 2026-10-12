@@ -283,11 +283,11 @@ def health_problem(db: Session) -> str | None:
     hours = MAX_SUCCESS_AGE // dt.timedelta(hours=1)
     if last_success is None:
         return (
-            f"No check of all items has succeeded since the app started at"
+            "No check of all items has succeeded since the app started at"
             f" {since.isoformat(timespec='seconds')}, more than {hours} hours ago."
         )
     return (
-        f"The last successful check of all items finished at"
+        "The last successful check of all items finished at"
         f" {since.isoformat(timespec='seconds')}, more than {hours} hours ago."
     )
 
