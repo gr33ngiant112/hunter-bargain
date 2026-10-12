@@ -50,6 +50,9 @@ def db_session():
     finally:
         session.close()
         Base.metadata.drop_all(bind=engine)
+        # Closes the pool's one connection; otherwise it is left to the garbage collector, and
+        # Python 3.13+ warns of an unclosed database (an error under filterwarnings).
+        engine.dispose()
 
 
 @pytest.fixture

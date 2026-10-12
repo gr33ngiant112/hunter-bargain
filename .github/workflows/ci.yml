@@ -38,8 +38,12 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
+      # The files to check (src) are set in pyproject.toml, as for the pre-commit hook.
+      - name: Type check
+        run: mypy
+      # Branch coverage of the package (pyproject.toml): under 85% fails the job.
       - name: Test
-        run: pytest -q
+        run: pytest -q --cov
       # An empty database migrates to head, and the models match it: no migration is missing.
       - name: Migrations
         env:
@@ -68,8 +72,9 @@ jobs:
           cache-suffix: lowest-direct
       - name: Install the lowest direct versions
         run: uv pip install --resolution lowest-direct -e ".[dev]"
+      # With coverage, as in the test job, so the pytest-cov floor is tested too.
       - name: Test
-        run: pytest -q
+        run: pytest -q --cov
 
   secret-scan:
     name: secret-scan
@@ -145,3 +150,55 @@ jobs:
         with:
           scan-args: |-
             --lockfile=uv.lock
+
+  # Semgrep's registry rules for Python and FastAPI; a finding fails the job. The official image
+  # (Semgrep 1.180.0), pinned by digest, reads the checkout through a read-only mount.
+  semgrep:
+    name: semgrep
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan with semgrep (p/python, p/fastapi)
+        run: >-
+          docker run --rm -v "$GITHUB_WORKSPACE:/src:ro" -w /src
+          semgrep/semgrep@sha256:529ee8a277ec8adc5b534d7c74eea0a47e9de21d62852b6ba7ac6ba9566845c3
+          semgrep scan --config p/python --config p/fastapi --error --metrics=off
+
+  # The workflows themselves: zizmor audits them for security problems, actionlint for mistakes,
+  # including each run script (through the runner image's shellcheck). A finding fails the job.
+  workflow-lint:
+    name: workflow-lint
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor 1.30.1 and actionlint 1.7.12 (checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/zizmor.tar.gz" \
+            https://github.com/zizmorcore/zizmor/releases/download/v1.30.1/zizmor-x86_64-unknown-linux-gnu.tar.gz
+          echo "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a  $RUNNER_TEMP/zizmor.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/zizmor.tar.gz" -C "$RUNNER_TEMP" zizmor
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+      # The job's token (contents: read) turns on zizmor's online audits, e.g. that each pinned SHA
+      # is a commit of the action's own repository and has no known advisory.
+      - name: Audit the workflows with zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '"$RUNNER_TEMP/zizmor" .github/workflows'
+      # Without shellcheck on PATH, actionlint would skip the run scripts silently.
+      - name: Lint the workflows with actionlint
+        run: |
+          shellcheck --version
+          "$RUNNER_TEMP/actionlint"

@@ -12,7 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "fastapi>=0.133.0",  # 0.132 keeps Starlette below 1.0; Starlette 0.52.1 has known advisories
     "uvicorn[standard]>=0.32.0",
-    "sqlalchemy>=2.0.0",
+    "sqlalchemy>=2.0.16",  # 2.0.15 calls datetime.utcfromtimestamp(), deprecated in Python 3.12
     "alembic>=1.13.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.7.0",  # NoDecode (comma-separated ALERT_RECIPIENTS)
@@ -29,7 +29,9 @@ hb = "hunter_bargain.cli:cli"
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3",  # 9.0.3 fixes PYSEC-2026-1845
-    "pytest-cov>=5.0.0",
+    # 6.3 and older also measure each subprocess a test starts; those run in tmp_path, without
+    # this file's branch = true, so `pytest --cov` fails to combine their data with the rest.
+    "pytest-cov>=7.0.0",
     "httpx2>=2.12.0",  # Starlette's TestClient runs on it (not imported); 2.12.0 fixes its advisories
     "ruff>=0.8.0",
     "mypy>=2.4",
@@ -58,3 +60,15 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A warning fails the test that raised it: deprecations and unclosed resources surface in CI.
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source = ["hunter_bargain"]
+
+[tool.coverage.report]
+fail_under = 85
+# The gate compares the total at this precision: with the default 0, 84.6% rounds up and passes.
+precision = 2
+show_missing = true
