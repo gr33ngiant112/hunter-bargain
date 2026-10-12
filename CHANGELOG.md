@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the workflows with zizmor and actionlint. Higher minimum versions: SQLAlchemy 2.0.16 (older
   releases cause a deprecation warning on Python 3.12) and, for development, pytest-cov 7.0 (with
   older releases, `pytest --cov` fails to combine the coverage of the tests' subprocesses).
+- The Docker image installs the app and the versions in `uv.lock`, in a multi-stage build with no
+  compiler, uv or dev tools in the final image; it starts as before. CI builds it with
+  `docker compose build`, runs lint, mypy, the tests and the migration check inside Docker images
+  (the tests also on Python 3.13 and 3.14), checks that the image answers `/health`, and fails on
+  a fixable HIGH or CRITICAL vulnerability that trivy finds in it.
 
 ### Removed
 

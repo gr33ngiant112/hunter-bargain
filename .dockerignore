@@ -11,8 +11,6 @@ __pycache__/
 # Coverage data (pytest --cov); an interrupted run leaves .coverage.* parts
 .coverage
 .coverage.*
-tests/
 tasks/
 data/
 AGENTS.md
-CHANGELOG.md
