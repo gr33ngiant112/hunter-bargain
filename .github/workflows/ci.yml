@@ -62,10 +62,9 @@ jobs:
       - name: Smoke test the app image
         run: |
           docker run --detach --name "$CI_NAME-smoke" --publish 127.0.0.1::8000 "$CI_NAME-app"
+          address=$(docker port "$CI_NAME-smoke" 8000/tcp)
           for _ in $(seq 60); do
-            address=$(docker port "$CI_NAME-smoke" 8000/tcp) &&
-              [ "$(curl -fsS --max-time 2 "http://$address/health")" = '{"status":"ok"}' ] &&
-              exit 0
+            curl -fs --max-time 2 "http://$address/health" | grep -Fx '{"status":"ok"}' && exit 0
             sleep 1
           done
           docker logs "$CI_NAME-smoke"
@@ -88,8 +87,8 @@ jobs:
         if: always()
         run: |
           docker rm --force "$CI_NAME-smoke"
-          docker compose -p "$CI_NAME" down --volumes --rmi local --remove-orphans
-          docker image rm --force "$CI_NAME-test"
+          docker compose -p "$CI_NAME" down --volumes --remove-orphans
+          docker image rm --force "$CI_NAME-app" "$CI_NAME-test"
 
   # The lowest versions pyproject.toml allows for each direct dependency, not uv.lock, so the
   # declared floors stay installable and tested: the Dockerfile's test-lowest-direct stage.
