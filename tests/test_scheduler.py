@@ -9,8 +9,10 @@ import threading
 import time
 from unittest.mock import patch
 
+import httpx
 import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from pydantic import SecretStr
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -20,6 +22,7 @@ from test_searcher import SEARCH_ERROR_BODY
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.models import CheckRun, Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
+from hunter_bargain.services import heartbeat
 from hunter_bargain.services import scheduler as scheduler_module
 from hunter_bargain.services.scheduler import _scheduled_price_check, start_scheduler
 
@@ -63,7 +66,7 @@ def daily_trigger(monkeypatch, db_session):
     """Return a function that runs start_scheduler and returns the daily job's trigger."""
     fresh = BackgroundScheduler()
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
-    monkeypatch.setattr(scheduler_module, "_started_at", None)  # start_scheduler sets it
+    monkeypatch.setattr(scheduler_module, "_started", None)  # start_scheduler sets it
     # start_scheduler reads the check_runs records: an empty test database, so no catch-up.
     monkeypatch.setattr(scheduler_module, "SessionLocal", _sessions(db_session))
 
@@ -475,7 +478,7 @@ def jobs_at(db_session, monkeypatch):
     fresh = BackgroundScheduler()
     monkeypatch.setattr(fresh, "start", functools.partial(fresh.start, paused=True))
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
-    monkeypatch.setattr(scheduler_module, "_started_at", None)  # start_scheduler sets it
+    monkeypatch.setattr(scheduler_module, "_started", None)  # start_scheduler sets it
 
     def start(now: dt.datetime) -> dict:
         _freeze_clock(monkeypatch, now)
@@ -651,3 +654,259 @@ def test_serpapi_error_response_is_recorded_as_an_engine_error(
 
     send.assert_called_once()
     assert _counts(db_session) == [(1, 1, 1, 1)]
+
+
+@both_entry_points
+def test_run_whose_every_search_failed_is_recorded_as_failed(
+    db_session, three_items, run_all, caplog
+):
+    """SerpAPI refused every search (no searches left, a revoked key): the run checked nothing,
+    so /health, the heartbeat and the catch-up at the next start treat it as failed (#24)."""
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        return _empty_result(item).model_copy(update={"engine_errors": QUOTA_ERRORS})
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+        caplog.at_level(logging.ERROR, logger="hunter_bargain.services.scheduler"),
+    ):
+        run_all()
+
+    assert [status for status, _, _ in _runs(db_session)] == ["failed"]
+    assert _counts(db_session) == [(3, 0, 6, 0)]
+    assert _messages(caplog, logging.ERROR) == [
+        "Price check of all items failed: all 6 of its searches failed"
+    ]
+
+
+def test_run_with_one_search_that_worked_still_succeeds(db_session, three_items):
+    """Only a run whose every search failed is failed: one that worked is a partial success."""
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        searches_used = 1 if item.id == three_items[-1] else 0
+        return _empty_result(item).model_copy(
+            update={"searches_used": searches_used, "engine_errors": QUOTA_ERRORS[searches_used:]}
+        )
+
+    _run_job(db_session, fake_check)
+
+    assert [status for status, _, _ in _runs(db_session)] == ["succeeded"]
+    assert _counts(db_session) == [(3, 1, 5, 0)]
+
+
+# #24: the heartbeat (HEARTBEAT_URL) goes out after a check of all items that succeeded, and only
+# then. Its requests go to an httpx.MockTransport.
+
+HEARTBEAT_URL = "https://hc-ping.com/fake-heartbeat-token-for-tests"
+
+
+@pytest.fixture
+def heartbeats(monkeypatch) -> list[httpx.Request]:
+    """HEARTBEAT_URL set, and the heartbeat requests the scheduler sends, answered with 200."""
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200)
+
+    send = functools.partial(heartbeat.send_heartbeat, transport=httpx.MockTransport(handle))
+    monkeypatch.setattr(settings, "heartbeat_url", SecretStr(HEARTBEAT_URL))
+    monkeypatch.setattr(scheduler_module, "send_heartbeat", send)
+    return sent
+
+
+def _statuses(db_session) -> list[str]:
+    return [status for status, _, _ in _runs(db_session)]
+
+
+def _check_finds_nothing(item: Item, db: object) -> PriceCheckResult:
+    """A run_price_check whose searches worked and found no price."""
+    return _empty_result(item)
+
+
+@both_entry_points
+def test_heartbeat_is_sent_once_after_a_run_that_succeeded(
+    db_session, three_items, heartbeats, run_all
+):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch(
+            "hunter_bargain.services.scheduler.run_price_check", side_effect=_check_finds_nothing
+        ),
+    ):
+        run_all()
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert _counts(db_session) == [(3, 0, 0, 0)]  # every item's check ran to the end
+    assert [(r.method, str(r.url)) for r in heartbeats] == [("GET", HEARTBEAT_URL)]
+
+
+def test_heartbeat_is_sent_after_a_run_with_no_items(db_session, heartbeats):
+    with patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)):
+        _run_daily_job()
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert len(heartbeats) == 1
+
+
+def test_no_heartbeat_after_a_run_that_an_error_ended(db_session, three_items, heartbeats):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch.object(Session, "scalars", side_effect=LIST_ITEMS_FAILS),
+        pytest.raises(OperationalError),
+    ):
+        _run_daily_job()
+
+    assert _statuses(db_session) == ["failed"]
+    assert heartbeats == []
+
+
+def test_no_heartbeat_after_a_run_whose_every_search_failed(db_session, three_items, heartbeats):
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        return _empty_result(item).model_copy(update={"engine_errors": QUOTA_ERRORS})
+
+    _run_job(db_session, fake_check)
+
+    assert _statuses(db_session) == ["failed"]
+    assert heartbeats == []
+
+
+def test_no_heartbeat_without_heartbeat_url(db_session, three_items, heartbeats, monkeypatch):
+    monkeypatch.setattr(settings, "heartbeat_url", SecretStr(""))
+
+    _run_job(db_session, _check_finds_nothing)
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert _counts(db_session) == [(3, 0, 0, 0)]
+    assert heartbeats == []
+
+
+# #24: after each run that ends, the searches it made, those that failed included, go to the
+# check of SerpAPI's searches left (services/quota.py, tested in test_quota.py).
+
+
+@pytest.mark.parametrize(
+    ("searches_used", "engine_errors", "status"),
+    [(2, [], "succeeded"), (1, QUOTA_ERRORS[1:], "succeeded"), (0, QUOTA_ERRORS, "failed")],
+    ids=["all worked", "one failed", "all failed"],
+)
+def test_searches_left_are_checked_with_the_searches_a_run_made(
+    db_session, three_items, searches_used, engine_errors, status
+):
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        return _empty_result(item).model_copy(
+            update={"searches_used": searches_used, "engine_errors": engine_errors}
+        )
+
+    with patch("hunter_bargain.services.scheduler.check_searches_left") as check:
+        _run_job(db_session, fake_check)
+
+    assert _statuses(db_session) == [status]
+    check.assert_called_once_with(3 * (searches_used + len(engine_errors)))
+
+
+def test_searches_left_are_not_checked_after_a_run_that_an_error_ended(db_session, three_items):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch.object(Session, "scalars", side_effect=LIST_ITEMS_FAILS),
+        patch("hunter_bargain.services.scheduler.check_searches_left") as check,
+        pytest.raises(OperationalError),
+    ):
+        _run_daily_job()
+
+    check.assert_not_called()
+
+
+def test_longest_gap_across_a_daylight_saving_change_is_the_time_that_passes():
+    """New York's clocks go back an hour on November 1, 2026: that day's 09:00 run comes 25 hours
+    after the 31st's, which /health's limit allows for (tested with UTC in test_main.py)."""
+    trigger = CronTrigger.from_crontab("0 9 * * *", timezone="America/New_York")
+
+    gap = scheduler_module._longest_gap(trigger, _utc(28, 0))
+
+    assert gap == dt.timedelta(hours=25)
+
+
+# #24: a run that had items, and in which every item check that ran raised an error, checked
+# nothing: it is recorded as failed. An item deleted during the run is not a failed check.
+
+LOADING_ITEMS_FAILS = OperationalError("SELECT items", {}, Exception("database is locked"))
+
+
+def _check_raises(item: Item, db: object) -> PriceCheckResult:
+    raise RuntimeError("database disk image is malformed")
+
+
+@both_entry_points
+def test_run_whose_every_item_check_raised_is_recorded_as_failed(
+    db_session, three_items, heartbeats, run_all, caplog
+):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=_check_raises),
+        caplog.at_level(logging.ERROR, logger="hunter_bargain.services.scheduler"),
+    ):
+        run_all()
+
+    assert _statuses(db_session) == ["failed"]
+    assert _counts(db_session) == [(0, 0, 0, 0)]
+    assert "Price check of all items failed: each of its 3 item checks raised an error" in (
+        _messages(caplog, logging.ERROR)
+    )
+    assert heartbeats == []
+
+
+def test_run_whose_every_item_failed_to_load_is_recorded_as_failed(
+    db_session, three_items, monkeypatch
+):
+    """Loading an item is part of its check: a database error there is a failed check too."""
+    load = Session.get
+
+    def get(self, entity, ident, *args, **kwargs):
+        if entity is Item:
+            raise LOADING_ITEMS_FAILS
+        return load(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "get", get)
+
+    _run_job(db_session, _check_finds_nothing)
+
+    assert _statuses(db_session) == ["failed"]
+
+
+def test_run_whose_items_were_all_deleted_before_their_checks_succeeds(
+    db_session, three_items, heartbeats, monkeypatch
+):
+    """Every item was gone by its turn: nothing failed, so the run succeeded with nothing done."""
+    load = Session.get
+    monkeypatch.setattr(
+        Session,
+        "get",
+        lambda self, entity, ident, *a, **k: (
+            None if entity is Item else load(self, entity, ident, *a, **k)
+        ),
+    )
+
+    _run_job(db_session, _check_finds_nothing)
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert _counts(db_session) == [(0, 0, 0, 0)]
+    assert len(heartbeats) == 1
+
+
+def test_one_check_that_raised_is_not_hidden_by_the_items_deleted_after_it(db_session, three_items):
+    """The first item's check deletes the other two items, then raises: the only check that
+    ran failed, so the run failed."""
+    first, second, third = three_items
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        with _sessions(db_session)() as api_db:
+            for item_id in (second, third):
+                api_db.delete(api_db.get(Item, item_id))
+            api_db.commit()
+        raise RuntimeError("alert could not be sent")
+
+    _run_job(db_session, fake_check)
+
+    assert _statuses(db_session) == ["failed"]

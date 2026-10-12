@@ -75,8 +75,10 @@ def configure_logging(level_name: str) -> None:
     """Log to stderr at *level_name* and keep the SerpAPI key out of every log record."""
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    # httpx logs every request URL, key included, at INFO.
-    logging.getLogger("httpx").setLevel(max(level, logging.WARNING))
+    # httpx logs every request URL at INFO: a SerpAPI URL holds the key, and HEARTBEAT_URL holds
+    # its monitor's token. httpcore, under httpx, logs at DEBUG.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
     factory = logging.getLogRecordFactory()
     if not isinstance(factory, _RedactingRecordFactory):
         logging.setLogRecordFactory(_RedactingRecordFactory(factory))

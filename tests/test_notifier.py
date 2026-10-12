@@ -16,7 +16,7 @@ from pydantic import SecretStr, ValidationError
 from hunter_bargain.config import Settings
 from hunter_bargain.schemas import PriceLow
 from hunter_bargain.services.engines.base import SearchResult
-from hunter_bargain.services.notifier import send_price_alert
+from hunter_bargain.services.notifier import send_notice, send_price_alert
 
 FAKE_PASSWORD = "fake-pass-for-test"
 
@@ -253,6 +253,73 @@ class TestSendPriceAlert:
         smtp_ssl_cls.assert_not_called()
         assert "Recipient for item 1 is not in ALERT_RECIPIENTS" in caplog.text
         assert "someone@example.net" not in caplog.text
+
+
+class TestSendNotice:
+    """A notice about the app itself (#24: SerpAPI searches running low) goes to every
+    ALERT_RECIPIENTS address, over the same SMTP path as the price alerts."""
+
+    def test_goes_to_every_alert_recipient_after_starttls_and_login(
+        self, smtp_settings, smtp_classes
+    ):
+        smtp_settings.alert_recipients = ["user@example.com", "ops@example.com"]
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        server = _server(smtp_cls)
+
+        assert send_notice("Searches running low", "12 left.") is True
+
+        assert [call[0] for call in server.method_calls] == ["starttls", "login", "send_message"]
+        _assert_verifying(server.starttls.call_args.kwargs.get("context"))
+        server.login.assert_called_once_with("bot@example.com", FAKE_PASSWORD)
+        message = server.send_message.call_args.args[0]
+        assert (message["Subject"], message["From"], message["To"]) == (
+            "Searches running low",
+            "bot@example.com",
+            "user@example.com, ops@example.com",
+        )
+        assert message.get_payload(decode=True).decode() == "12 left."
+        smtp_ssl_cls.assert_not_called()
+
+    def test_port_465_uses_implicit_tls(self, smtp_settings, smtp_classes):
+        smtp_settings.smtp_port = 465
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        server = _server(smtp_ssl_cls)
+
+        assert send_notice("Searches running low", "12 left.") is True
+
+        _assert_verifying(smtp_ssl_cls.call_args.kwargs["context"])
+        assert [call[0] for call in server.method_calls] == ["login", "send_message"]
+        smtp_cls.assert_not_called()
+
+    def test_skipped_without_smtp_credentials(self, smtp_settings, smtp_classes, caplog):
+        smtp_settings.smtp_password = SecretStr("")
+        smtp_cls, smtp_ssl_cls = smtp_classes
+
+        assert send_notice("Searches running low", "12 left.") is False
+
+        smtp_cls.assert_not_called()
+        smtp_ssl_cls.assert_not_called()
+        assert "SMTP not configured — skipping the email: Searches running low" in caplog.text
+
+    def test_skipped_without_alert_recipients(self, smtp_settings, smtp_classes, caplog):
+        smtp_settings.alert_recipients = []
+        smtp_cls, smtp_ssl_cls = smtp_classes
+
+        assert send_notice("Searches running low", "12 left.") is False
+
+        smtp_cls.assert_not_called()
+        assert "ALERT_RECIPIENTS is empty — skipping the email: Searches running low" in caplog.text
+
+    def test_failed_send_is_logged_not_raised(self, smtp_settings, smtp_classes, caplog):
+        smtp_cls, _ = smtp_classes
+        server = _server(smtp_cls)
+        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"5.7.8 Not accepted")
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_notice("Searches running low", "12 left.") is False
+
+        assert "Failed to send the email: Searches running low" in caplog.text
+        assert FAKE_PASSWORD not in caplog.text
 
 
 class TestAlertContent:

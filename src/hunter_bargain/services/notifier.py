@@ -1,6 +1,7 @@
 """Email notification service.
 
-Sends price alerts via SMTP when a tracked item hits its target price.
+Sends price alerts via SMTP when a tracked item hits its target price, and notices about the app
+itself (SerpAPI searches running low) to ALERT_RECIPIENTS.
 """
 
 import html
@@ -8,6 +9,7 @@ import logging
 import smtplib
 import ssl
 import unicodedata
+from email.message import Message
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import urlparse
@@ -128,6 +130,46 @@ def _build_html_body(item: Item, result: SearchResult, lows: list[tuple[str, str
     """
 
 
+def _smtp_configured() -> bool:
+    """Whether email can be sent. SMTP_SECURITY=none is for a local test server such as Mailpit:
+    no TLS and no login, so it needs no credentials. Every other value takes the TLS path, which
+    needs SMTP_USER and SMTP_PASSWORD."""
+    return settings.smtp_security == "none" or bool(settings.smtp_user and settings.smtp_password)
+
+
+def _send(message: Message) -> None:
+    """Send `message` through SMTP_HOST; an error is raised to the caller.
+
+    SMTP_SECURITY=tls: TLS that verifies the server certificate (implicit on port 465, STARTTLS
+    on any other), then the login. none: neither.
+    """
+    tls = settings.smtp_security != "none"
+    # Verify the server certificate and hostname on both paths: without a context,
+    # starttls() skips verification.
+    context = ssl.create_default_context()
+    implicit_tls = tls and settings.smtp_port == 465  # SMTPS: TLS from the first byte
+    connection: smtplib.SMTP  # SMTP_SSL is a subclass
+    if implicit_tls:
+        connection = smtplib.SMTP_SSL(
+            settings.smtp_host,
+            settings.smtp_port,
+            context=context,
+            timeout=settings.smtp_timeout,
+        )
+    else:
+        connection = smtplib.SMTP(
+            settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout
+        )
+
+    with connection as server:
+        # Without TLS there is no login either: the password never crosses a plain connection.
+        if tls:
+            if not implicit_tls:
+                server.starttls(context=context)
+            server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
+        server.send_message(message)
+
+
 def send_price_alert(
     item: Item,
     result: SearchResult,
@@ -141,10 +183,7 @@ def send_price_alert(
     Returns True if the email was sent successfully, False otherwise.
     Fails gracefully — never raises to the caller.
     """
-    # SMTP_SECURITY=none is for a local test server such as Mailpit: no TLS and no login, so it
-    # needs no credentials. Every other value takes the TLS path.
-    tls = settings.smtp_security != "none"
-    if tls and (not settings.smtp_user or not settings.smtp_password):
+    if not _smtp_configured():
         logger.warning("SMTP not configured — skipping email notification for item %d", item.id)
         return False
 
@@ -175,31 +214,7 @@ def send_price_alert(
         )
         msg.attach(MIMEText(plain, "plain"))
         msg.attach(MIMEText(_build_html_body(item, result, lows), "html"))
-
-        # Verify the server certificate and hostname on both paths: without a context,
-        # starttls() skips verification.
-        context = ssl.create_default_context()
-        implicit_tls = tls and settings.smtp_port == 465  # SMTPS: TLS from the first byte
-        connection: smtplib.SMTP  # SMTP_SSL is a subclass
-        if implicit_tls:
-            connection = smtplib.SMTP_SSL(
-                settings.smtp_host,
-                settings.smtp_port,
-                context=context,
-                timeout=settings.smtp_timeout,
-            )
-        else:
-            connection = smtplib.SMTP(
-                settings.smtp_host, settings.smtp_port, timeout=settings.smtp_timeout
-            )
-
-        with connection as server:
-            # Without TLS there is no login either: the password never crosses a plain connection.
-            if tls:
-                if not implicit_tls:
-                    server.starttls(context=context)
-                server.login(settings.smtp_user, settings.smtp_password.get_secret_value())
-            server.send_message(msg)
+        _send(msg)
 
         logger.info("Price alert sent to %s for item %d", item.notify_email, item.id)
         return True
@@ -207,3 +222,29 @@ def send_price_alert(
     except Exception:
         logger.exception("Failed to send price alert for item %d", item.id)
         return False
+
+
+def send_notice(subject: str, text: str) -> bool:
+    """Email a plain-text notice about the app itself to every ALERT_RECIPIENTS address.
+
+    Returns True if it was sent. Skipped, with a warning in the log, when SMTP is not configured
+    or ALERT_RECIPIENTS is empty. Never raises.
+    """
+    if not _smtp_configured():
+        logger.warning("SMTP not configured — skipping the email: %s", subject)
+        return False
+    if not settings.alert_recipients:
+        logger.warning("ALERT_RECIPIENTS is empty — skipping the email: %s", subject)
+        return False
+    try:
+        msg = MIMEText(text, "plain")
+        msg["Subject"] = subject
+        msg["From"] = settings.email_from or settings.smtp_user
+        msg["To"] = ", ".join(settings.alert_recipients)
+        _send(msg)
+    except Exception:
+        logger.exception("Failed to send the email: %s", subject)
+        return False
+    count = len(settings.alert_recipients)
+    logger.info("Email sent to %d ALERT_RECIPIENTS address(es): %s", count, subject)
+    return True

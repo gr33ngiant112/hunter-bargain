@@ -151,8 +151,10 @@ def test_debug_logging_successful_search_leaves_no_key(engine_name, fake_key, st
 
 @pytest.mark.parametrize("engine_name", ENGINES)
 def test_httpx_request_line_is_redacted(engine_name, fake_key, stub_serpapi, caplog):
-    caplog.set_level(logging.DEBUG)  # httpcore's records too
-    caplog.set_level(logging.DEBUG, logger="httpx")  # lift the app's WARNING cap on httpx
+    caplog.set_level(logging.DEBUG)
+    # Lift the app's WARNING caps: httpx logs the request line, and httpcore each step at DEBUG.
+    caplog.set_level(logging.DEBUG, logger="httpx")
+    caplog.set_level(logging.DEBUG, logger="httpcore")
 
     assert SerpApiShoppingEngine(engine_name).search("widget")
 
