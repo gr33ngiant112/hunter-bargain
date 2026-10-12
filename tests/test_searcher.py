@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 import logging
+from typing import Any, NamedTuple
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -202,9 +203,16 @@ def _without(row: dict, *fields: str) -> dict:
     return {key: value for key, value in row.items() if key not in fields}
 
 
-def _serve(fetch: MagicMock, *rows: dict) -> None:
-    """Make an engine's patched SerpAPI fetch return these shopping_results rows."""
-    fetch.return_value = {"shopping_results": list(rows)}
+class EngineSearches(NamedTuple):
+    """One engine's searches, answered by the local stub SerpAPI (stub_serpapi in conftest.py)."""
+
+    stub: Any
+    engine: str  # SerpAPI's engine parameter
+
+
+def _serve(searches: EngineSearches, *rows: dict) -> None:
+    """Make the stub SerpAPI answer the engine's searches with these shopping_results rows."""
+    searches.stub.bodies[searches.engine] = json.dumps({"shopping_results": list(rows)})
 
 
 def _skip_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
@@ -212,27 +220,19 @@ def _skip_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 @pytest.fixture
-def google_search():
-    """The Google Shopping engine's SerpAPI fetch, patched, with a fake key."""
-    with (
-        patch("hunter_bargain.services.engines.google.settings") as settings,
-        patch("hunter_bargain.services.engines.google.fetch_serpapi") as fetch,
-    ):
-        settings.serpapi_key = SecretStr("test-key")
-        _serve(fetch)
-        yield fetch
+def google_search(serpapi_key, stub_serpapi):
+    """Google Shopping searches through the real client, answered by the local stub SerpAPI."""
+    searches = EngineSearches(stub_serpapi, "google_shopping")
+    _serve(searches)
+    return searches
 
 
 @pytest.fixture
-def bing_search():
-    """The Bing Shopping engine's SerpAPI fetch, patched, with a fake key."""
-    with (
-        patch("hunter_bargain.services.engines.bing.settings") as settings,
-        patch("hunter_bargain.services.engines.bing.fetch_serpapi") as fetch,
-    ):
-        settings.serpapi_key = SecretStr("test-key")
-        _serve(fetch)
-        yield fetch
+def bing_search(serpapi_key, stub_serpapi):
+    """Bing Shopping searches through the real client, answered by the local stub SerpAPI."""
+    searches = EngineSearches(stub_serpapi, "bing_shopping")
+    _serve(searches)
+    return searches
 
 
 @pytest.fixture
@@ -243,7 +243,7 @@ def serpapi_key(monkeypatch):
 
 @pytest.fixture
 def engines(google_search, bing_search):
-    """Both real engines in the searcher's registry, each answering from its patched client."""
+    """Both real engines in the searcher's registry, their searches answered by the stub."""
     with patch(
         "hunter_bargain.services.searcher._ENGINES", [GoogleShoppingEngine(), BingShoppingEngine()]
     ):
@@ -411,7 +411,7 @@ class TestBuildQuery:
 
 
 class TestGoogleShoppingEngine:
-    """Tests for the Google Shopping engine (mocked SerpAPI calls)."""
+    """Tests for the Google Shopping engine, its searches answered by the local stub SerpAPI."""
 
     @patch("hunter_bargain.services.engines.google.settings")
     def test_missing_api_key_is_an_engine_error(self, mock_settings):
@@ -540,7 +540,7 @@ class TestGoogleShoppingEngine:
 
 
 class TestBingShoppingEngine:
-    """Tests for the Bing Shopping engine (mocked SerpAPI calls)."""
+    """Tests for the Bing Shopping engine, its searches answered by the local stub SerpAPI."""
 
     def test_url_is_external_link_and_merchant_is_seller(self, bing_search):
         """The seller's own page, not the bing.com/ck redirect in link (#34)."""
