@@ -1,6 +1,6 @@
 """Multi-engine price search orchestrator.
 
-Queries all registered search engines in sequence, aggregates results,
+Queries all registered search engines at the same time, aggregates results,
 persists price records, and triggers notifications when targets are met.
 """
 
@@ -11,6 +11,7 @@ import itertools
 import logging
 import re
 import statistics
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -21,16 +22,15 @@ from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult, PriceRecordResponse
 from hunter_bargain.services import history
 from hunter_bargain.services.engines.base import EngineError, SearchEngine, SearchResult
-from hunter_bargain.services.engines.bing import BingShoppingEngine
-from hunter_bargain.services.engines.google import GoogleShoppingEngine
+from hunter_bargain.services.engines.serpapi_shopping import SerpApiShoppingEngine
 from hunter_bargain.services.notifier import send_price_alert
 
 logger = logging.getLogger(__name__)
 
 # Registry of active search engines. Add new engines here.
 _ENGINES: list[SearchEngine] = [
-    GoogleShoppingEngine(),
-    BingShoppingEngine(),
+    SerpApiShoppingEngine("google_shopping"),
+    SerpApiShoppingEngine("bing_shopping"),
 ]
 
 
@@ -582,9 +582,9 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     """Execute a price check across all engines for a single item.
 
     1. Build search query from item name + keywords.
-    2. Query each registered engine; an engine that cannot search is logged at ERROR and
-       listed in engine_errors, so a failed search is not reported as "no results". The
-       searches that worked are counted in searches_used.
+    2. Query the registered engines at the same time, one thread each; an engine that cannot
+       search is logged at ERROR and listed in engine_errors, so a failed search is not
+       reported as "no results". The searches that worked are counted in searches_used.
     3. Persist all price observations, then read the item's lowest price in the last 90 days
        and its all-time low, this check's prices included (#31).
     4. Take the lowest price from a merchant that may alert (MERCHANT_DENYLIST and
@@ -597,12 +597,19 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     query = _build_query(item)
     logger.info("Running price check for item %d: %r", item.id, query)
 
+    engines = list(_ENGINES)
+    # One thread per engine: a check takes as long as its slowest search, not the sum of them.
+    with ThreadPoolExecutor(max_workers=len(engines)) as pool:
+        searches = [pool.submit(engine.search, query) for engine in engines]
+
+    # Results and errors are taken in the registry's order, whichever search ended first, as
+    # when the engines ran in turn: of two equal prices, the first engine's is the lowest.
     all_results: list[SearchResult] = []
     engine_errors: list[str] = []
     searches_used = 0
-    for engine in _ENGINES:
+    for engine, search in zip(engines, searches, strict=True):
         try:
-            results = engine.search(query)
+            results = search.result()
             searches_used += 1
             all_results.extend(results)
         except EngineError as e:

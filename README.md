@@ -266,8 +266,7 @@ src/hunter_bargain/
     ├── scheduler.py     # APScheduler daily cron job
     └── engines/
         ├── base.py      # SearchEngine ABC + SearchResult dataclass
-        ├── google.py    # Google Shopping via SerpAPI
-        └── bing.py      # Bing Shopping via SerpAPI
+        └── serpapi_shopping.py  # Google + Bing Shopping via SerpAPI, a field map each
 ```
 
 ### How It Works

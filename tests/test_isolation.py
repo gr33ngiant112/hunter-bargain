@@ -31,7 +31,7 @@ def test_settings_are_the_defaults():
     # The log levels main.py's configure_logging sets for the default LOG_LEVEL.
     level = getattr(logging, defaults.log_level.upper())
     assert logging.getLogger().level == level
-    assert logging.getLogger("urllib3").level == max(level, logging.WARNING)
+    assert logging.getLogger("httpx").level == max(level, logging.WARNING)
 
 
 def test_a_local_env_file_and_environment_do_not_reach_the_tests(tmp_path):
