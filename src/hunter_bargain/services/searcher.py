@@ -10,6 +10,7 @@ import datetime as dt
 import itertools
 import logging
 import re
+import statistics
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -559,6 +560,24 @@ def _alert_due(item: Item, price: float, now: dt.datetime) -> bool:
     return (now - last_alerted_at).total_seconds() >= settings.alert_cooldown_days * 86400
 
 
+# A price is checked against the median of the same check's results only with at least this many.
+_VERIFY_MERCHANT_MIN_RESULTS = 3
+
+
+def _verify_merchant(price: float, results: list[SearchResult]) -> bool:
+    """Whether a price is too far below the check's other prices to trust unchecked (#29).
+
+    True when it is more than VERIFY_MERCHANT_PCT percent below the median of `results`, which
+    holds at least _VERIFY_MERCHANT_MIN_RESULTS prices. Compared in decimal, as _alert_due does,
+    so a price exactly that far below is not flagged.
+    """
+    if len(results) < _VERIFY_MERCHANT_MIN_RESULTS:
+        return False
+    median = statistics.median(Decimal(str(r.price)) for r in results)
+    below = Decimal(str(settings.verify_merchant_pct)) / 100
+    return Decimal(str(price)) < median * (1 - below)
+
+
 def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     """Execute a price check across all engines for a single item.
 
@@ -568,9 +587,12 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
        searches that worked are counted in searches_used.
     3. Persist all price observations, then read the item's lowest price in the last 90 days
        and its all-time low, this check's prices included (#31).
-    4. If the lowest price meets the target and no earlier alert covers it (_alert_due), email
-       an alert, and record its price and time once it is sent.
-    5. Return structured results.
+    4. Take the lowest price from a merchant that may alert (MERCHANT_DENYLIST and
+       MERCHANT_ALLOWLIST, #29), and flag it "verify merchant" when it is far below the median
+       of those merchants' prices (_verify_merchant). The others' results are saved, not used.
+    5. If that price meets the target and no earlier alert covers it (_alert_due), email an
+       alert, and record its price and time once it is sent.
+    6. Return structured results.
     """
     query = _build_query(item)
     logger.info("Running price check for item %d: %r", item.id, query)
@@ -602,7 +624,24 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     low_90_days = history.lowest_price(db, item.id, since=now - history.LOW_WINDOW)
     all_time_low = history.lowest_price(db, item.id)
 
-    lowest: SearchResult | None = relevant_results[0] if relevant_results else None
+    # Listings from merchants that may alert, cheapest first; the median leaves the others out,
+    # so many listings from an excluded seller cannot drag it down.
+    eligible = [r for r in relevant_results if settings.merchant_may_alert(r.merchant)]
+    merchant_excluded = len(relevant_results) - len(eligible)
+    if merchant_excluded:
+        logger.info(
+            "Item %d: %d result(s) from merchants that may not alert left out",
+            item.id,
+            merchant_excluded,
+        )
+    lowest: SearchResult | None = eligible[0] if eligible else None
+    verify_merchant = lowest is not None and _verify_merchant(lowest.price, eligible)
+    if lowest and verify_merchant:
+        logger.info(
+            "Item %d: $%.2f is far below the check's other prices: verify merchant",
+            item.id,
+            lowest.price,
+        )
 
     alert_sent = False
     if lowest and item.target_price and lowest.price <= item.target_price:
@@ -621,7 +660,11 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
                 lowest.price,
             )
         elif send_price_alert(
-            item=item, result=lowest, low_90_days=low_90_days, all_time_low=all_time_low
+            item=item,
+            result=lowest,
+            low_90_days=low_90_days,
+            all_time_low=all_time_low,
+            verify_merchant=verify_merchant,
         ):
             alert_sent = True
             # Only a sent alert counts: after a failed send, the next check tries again.
@@ -641,6 +684,8 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
         engine_errors=engine_errors,
         searches_used=searches_used,
         alert_sent=alert_sent,
+        merchant_excluded=merchant_excluded,
+        verify_merchant=verify_merchant,
         low_90_days=low_90_days,
         all_time_low=all_time_low,
     )

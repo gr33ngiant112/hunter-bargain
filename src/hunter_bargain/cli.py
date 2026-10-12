@@ -292,15 +292,26 @@ def check(ctx: click.Context, item_id: int | None) -> None:
             source = f"{merchant} via {source}"
         lowest_url = result.get("lowest_url")
         engine_errors = result.get("engine_errors") or []
+        # Results from merchants MERCHANT_DENYLIST or MERCHANT_ALLOWLIST leaves out (#29).
+        excluded = result.get("merchant_excluded") or 0
 
         if lowest is not None:
             click.echo(f"  {name}: ${lowest:.2f} ({source}) — {count} result(s)")
             if lowest_url:
                 click.echo(f"    -> {_clean(lowest_url)}")
+            if result.get("verify_merchant"):
+                click.secho(
+                    "    verify merchant: far below this check's other prices; check the seller",
+                    fg="yellow",
+                )
+        elif excluded:
+            click.secho(f"  {name}: no prices from merchants that may alert", fg="yellow")
         elif engine_errors:
             click.secho(f"  {name}: no prices, {len(engine_errors)} engine error(s)", fg="red")
         else:
             click.secho(f"  {name}: no results found", fg="yellow")
+        if excluded:
+            click.echo(f"    {excluded} result(s) from excluded merchants left out")
         _print_lows(
             [
                 ("lowest in 90 days", result.get("low_90_days")),
