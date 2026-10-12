@@ -72,8 +72,9 @@ jobs:
           cache-suffix: lowest-direct
       - name: Install the lowest direct versions
         run: uv pip install --resolution lowest-direct -e ".[dev]"
+      # With coverage, as in the test job, so the pytest-cov floor is tested too.
       - name: Test
-        run: pytest -q
+        run: pytest -q --cov
 
   secret-scan:
     name: secret-scan
