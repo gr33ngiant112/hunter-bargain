@@ -16,7 +16,7 @@ from hunter_bargain.config import settings as app_settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services.engines import base
-from hunter_bargain.services.engines.base import SearchResult
+from hunter_bargain.services.engines.base import SearchEngine, SearchResult
 from hunter_bargain.services.engines.serpapi_shopping import SerpApiShoppingEngine
 from hunter_bargain.services.searcher import (
     _build_query,
@@ -1640,3 +1640,96 @@ class TestVerifyMerchant:
         )
 
         assert (result.lowest_price, result.verify_merchant) == (None, False)
+
+
+# #33: run_price_check takes its engines and notifier as parameters, so these tests pass fakes
+# instead of patching the searcher's module globals.
+
+
+class FakeEngine(SearchEngine):
+    """An engine that answers each search with `results`, or raises `error`."""
+
+    def __init__(self, name: str, *results: SearchResult, error: Exception | None = None):
+        self._name, self._results, self._error = name, list(results), error
+        self.queries: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def search(self, query: str) -> list[SearchResult]:
+        self.queries.append(query)
+        if self._error is not None:
+            raise self._error
+        return list(self._results)
+
+
+class FakeNotify:
+    """A notifier that records each alert and answers `sent`."""
+
+    def __init__(self, sent: bool = True):
+        self.sent = sent
+        self.alerts: list[dict[str, Any]] = []
+
+    def __call__(self, **alert: Any) -> bool:
+        self.alerts.append(alert)
+        return self.sent
+
+
+def _widget_at(price: float, merchant: str) -> SearchResult:
+    return SearchResult(
+        title="Tracked Widget", price=price, currency="USD", source="fake", merchant=merchant
+    )
+
+
+class TestEnginesAndNotifyAsParameters:
+    def test_the_given_engines_search_and_the_given_notifier_alerts(self, db_session):
+        """The registry's engines would fail without SERPAPI_KEY; these are the only ones used."""
+        working = FakeEngine("working", _widget_at(45.0, "Walmart"), _widget_at(48.0, "Target"))
+        failing = FakeEngine("failing", error=base.EngineError("HTTP 429, SerpAPI said no"))
+        notify = FakeNotify()
+        item = _tracked_item(db_session, "Tracked Widget", 50.0)
+
+        result = run_price_check(
+            item=item, db=db_session, engines=[working, failing], notify=notify
+        )
+
+        assert working.queries == failing.queries == ["Tracked Widget"]
+        assert result.engine_errors == ["failing: HTTP 429, SerpAPI said no"]
+        assert (result.lowest_price, result.lowest_merchant, result.searches_used) == (
+            45.0,
+            "Walmart",
+            1,
+        )
+        [alert] = notify.alerts
+        assert (alert["item"], alert["result"].price, alert["result"].merchant) == (
+            item,
+            45.0,
+            "Walmart",
+        )
+        assert result.alert_sent is True
+        assert item.last_alert_price == 45.0
+
+    def test_an_alert_the_notifier_could_not_send_is_not_recorded(self, db_session):
+        notify = FakeNotify(sent=False)
+        item = _tracked_item(db_session, "Tracked Widget", 50.0)
+
+        result = run_price_check(
+            item=item,
+            db=db_session,
+            engines=[FakeEngine("one", _widget_at(45.0, "A"))],
+            notify=notify,
+        )
+
+        assert len(notify.alerts) == 1
+        assert result.alert_sent is False
+        assert (item.last_alert_price, item.last_alerted_at) == (None, None)
+
+    def test_no_engines_means_no_search(self, db_session):
+        notify = FakeNotify()
+        item = _tracked_item(db_session, "Tracked Widget", 50.0)
+
+        result = run_price_check(item=item, db=db_session, engines=[], notify=notify)
+
+        assert (result.results_count, result.searches_used, result.engine_errors) == (0, 0, [])
+        assert notify.alerts == []
