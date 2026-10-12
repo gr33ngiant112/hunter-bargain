@@ -63,7 +63,7 @@ def daily_trigger(monkeypatch, db_session):
     """Return a function that runs start_scheduler and returns the daily job's trigger."""
     fresh = BackgroundScheduler()
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
-    monkeypatch.setattr(scheduler_module, "_started_at", None)  # start_scheduler sets it
+    monkeypatch.setattr(scheduler_module, "_started", None)  # start_scheduler sets it
     # start_scheduler reads the check_runs records: an empty test database, so no catch-up.
     monkeypatch.setattr(scheduler_module, "SessionLocal", _sessions(db_session))
 
@@ -475,7 +475,7 @@ def jobs_at(db_session, monkeypatch):
     fresh = BackgroundScheduler()
     monkeypatch.setattr(fresh, "start", functools.partial(fresh.start, paused=True))
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
-    monkeypatch.setattr(scheduler_module, "_started_at", None)  # start_scheduler sets it
+    monkeypatch.setattr(scheduler_module, "_started", None)  # start_scheduler sets it
 
     def start(now: dt.datetime) -> dict:
         _freeze_clock(monkeypatch, now)

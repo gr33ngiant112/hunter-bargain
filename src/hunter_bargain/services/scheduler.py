@@ -6,6 +6,7 @@ Designed to run inside the same process as the FastAPI app.
 """
 
 import datetime as dt
+import itertools
 import logging
 import threading
 from collections.abc import Iterator
@@ -39,13 +40,28 @@ scheduler = BackgroundScheduler(
 # A daily run missed while the app was down runs this long after the app starts.
 CATCH_UP_DELAY = dt.timedelta(minutes=1)
 
-# GET /health fails once the last successful check of all items is older than this: the daily
-# job's day, plus two hours for a run that starts late or takes long.
-MAX_SUCCESS_AGE = dt.timedelta(hours=26)
+# GET /health fails once the last successful check of all items is older than the longest gap
+# between the daily job's run times (PRICE_CHECK_CRON), plus this for a run that starts late or
+# takes long: 26 hours for the default daily schedule.
+OVERDUE_AFTER = dt.timedelta(hours=2)
 
-# When start_scheduler started the scheduler. Until a check of all items has succeeded (a new
-# database), GET /health measures from this time instead.
-_started_at: dt.datetime | None = None
+# The longest gap is taken from this many of the daily job's next run times: more than a week of
+# a daily schedule, so one that skips weekends gets their gap.
+_GAP_RUNS = 10
+
+
+@dataclass(frozen=True)
+class _Started:
+    """When start_scheduler started the scheduler, and the age at which the last successful
+    check of all items makes GET /health fail."""
+
+    at: dt.datetime
+    max_success_age: dt.timedelta
+
+
+# Set by start_scheduler. Until a check of all items has succeeded (a new database), GET /health
+# measures from its time instead.
+_started: _Started | None = None
 
 # One price check of all items at a time. The daily job and POST /prices/check-all share this
 # lock, so overlapping runs cannot check, and alert on, the same items twice. It is a plain Lock
@@ -215,7 +231,7 @@ def _check_item(item_id: int) -> PriceCheckResult | None:
 
 def start_scheduler() -> None:
     """Register the daily price check job, catch up a missed daily run, start the scheduler."""
-    global _started_at
+    global _started
     now = _now()
     # Without a time zone the trigger would use the host's local time.
     trigger = CronTrigger.from_crontab(settings.price_check_cron, timezone=settings.price_check_tz)
@@ -228,10 +244,22 @@ def start_scheduler() -> None:
     )
     _schedule_catch_up(trigger, now)
     scheduler.start()
-    _started_at = now
+    _started = _Started(at=now, max_success_age=_longest_gap(trigger, now) + OVERDUE_AFTER)
     logger.info(
         "Scheduler started — cron: %s (%s)", settings.price_check_cron, settings.price_check_tz
     )
+
+
+def _longest_gap(trigger: CronTrigger, now: dt.datetime) -> dt.timedelta:
+    """The longest time between two consecutive run times among the trigger's next _GAP_RUNS.
+
+    Compared in UTC, so a gap across a daylight saving change is the time that really passes.
+    """
+    times = [trigger.get_next_fire_time(None, now)]
+    for _ in range(_GAP_RUNS - 1):
+        times.append(trigger.get_next_fire_time(times[-1], times[-1]))
+    utc = [time.astimezone(dt.UTC) for time in times]
+    return max(later - earlier for earlier, later in itertools.pairwise(utc))
 
 
 def _last_success(db: Session) -> dt.datetime | None:
@@ -284,16 +312,18 @@ def health_problem(db: Session) -> str | None:
     """Why the daily price check is not working, for GET /health; None if it is.
 
     It is not when the scheduler is not running, or when the last successful check of all items
-    finished more than MAX_SUCCESS_AGE ago. Until one has succeeded (a new database), the time is
-    measured from the scheduler's start, so a fresh install is healthy for its first day.
+    finished longer ago than the longest gap between the daily job's run times plus
+    OVERDUE_AFTER: 26 hours for the default daily schedule. Until one has succeeded (a new
+    database), the time is measured from the scheduler's start, so a fresh install is healthy for
+    its first day.
     """
-    if not scheduler.running or _started_at is None:
+    if not scheduler.running or _started is None:
         return "The scheduler is not running: no daily price check will run."
     last_success = _last_success(db)
-    since = last_success or _started_at
-    if _now() - since <= MAX_SUCCESS_AGE:
+    since = last_success or _started.at
+    if _now() - since <= _started.max_success_age:
         return None
-    hours = MAX_SUCCESS_AGE // dt.timedelta(hours=1)
+    hours = f"{_started.max_success_age / dt.timedelta(hours=1):g}"
     if last_success is None:
         return (
             "No check of all items has succeeded since the app started at"

@@ -197,7 +197,7 @@ Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `suc
 
 ### Health
 
-`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items finished more than 26 hours ago; a check whose every search failed is not a success. Until a check has succeeded (a new database), the 26 hours count from the app's start. After the app was down for more than a day, it answers 503 until the catch-up check, a minute after the start, succeeds. Docker Compose's healthcheck reads it.
+`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items is overdue; a check whose every search failed is not a success. Overdue means older than the longest gap between `PRICE_CHECK_CRON`'s next 10 run times plus 2 hours: 26 hours with the default daily schedule, 74 for weekdays only. Until a check has succeeded (a new database), the time counts from the app's start. After the app was down for longer than that, it answers 503 until the catch-up check, a minute after the start, succeeds: the last check really is that old. Docker Compose's healthcheck reads it.
 
 ### Example: Create an item
 
@@ -306,7 +306,7 @@ All configuration is via environment variables (`.env` file, or the file `HB_ENV
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
 | `ALERT_MIN_DROP_PCT` | `0` | How far below an item's last alert price, in percent, a new low must be to send another alert; `0` alerts on any lower price. At least 0 and less than 100 |
 | `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
-| `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ` |
+| `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ`. `/health` fails once a check is overdue by its schedule ([Health](#health)) |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
 | `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
 | `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
@@ -325,7 +325,8 @@ docker compose up --build -d
   set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
   the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
 - Health check: `curl http://localhost:8000/health` answers 503, with the reason, when the scheduler
-  is not running or no price check of all items has succeeded in 26 hours ([Health](#health));
+  is not running or no price check of all items has succeeded in 26 hours (with the default daily
+  schedule; see [Health](#health));
   `hb status` shows the last check. The image's Docker `HEALTHCHECK` reads the same endpoint.
 - SQLite data persisted via Docker volume (`app-data`)
 - The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
