@@ -18,63 +18,130 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # The app image as Docker Compose builds it, and the checks inside the Dockerfile's test stage:
+  # lint, types, the tests with the coverage gate, and migrations. Then the app image must answer
+  # /health, and trivy scans it.
   test:
     name: test
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      # The name of everything this run creates: the Compose project, its images and containers.
+      CI_NAME: ci-hunter-bargain-${{ github.run_id }}-${{ github.run_attempt }}
+      # The app's env_file (HB_ENV_FILE, default .env) must exist for the Compose versions and
+      # commands that read it with the project, and a checkout has no .env: the committed example
+      # (development values, no credentials) stands in. No step starts the app with it.
+      HB_ENV_FILE: .env.example
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.12"
-          activate-environment: true
-      # The versions in uv.lock. --locked fails the job if uv.lock is out of date with pyproject.toml.
-      - name: Install
-        run: uv sync --locked --extra dev
+      # The image the app deploys, built as `docker compose build` builds it: $CI_NAME-app.
+      - name: Build the app image
+        run: docker compose -p "$CI_NAME" build
+      # The app's packages from uv.lock, plus the dev tools and the tests. The build fails when
+      # uv.lock is out of date with pyproject.toml.
+      - name: Build the test image
+        run: docker build --target test -t "$CI_NAME-test" .
       - name: Lint
-        run: |
-          ruff check .
-          ruff format --check .
+        run: docker run --rm "$CI_NAME-test" sh -c 'ruff check . && ruff format --check .'
       # The files to check (src) are set in pyproject.toml, as for the pre-commit hook.
       - name: Type check
-        run: mypy
+        run: docker run --rm "$CI_NAME-test" mypy
       # Branch coverage of the package (pyproject.toml): under 85% fails the job.
       - name: Test
-        run: pytest -q --cov
+        run: docker run --rm "$CI_NAME-test" pytest -q --cov
       # An empty database migrates to head, and the models match it: no migration is missing.
       - name: Migrations
-        env:
-          DATABASE_URL: sqlite:///${{ runner.temp }}/migrations.db
+        run: >-
+          docker run --rm -e DATABASE_URL=sqlite:////tmp/migrations.db "$CI_NAME-test"
+          sh -c 'alembic upgrade head && alembic check'
+      # The app image with no settings (the defaults: no credentials, an empty database), on a
+      # port of 127.0.0.1 that Docker picks. /health must answer within 60 seconds.
+      - name: Smoke test the app image
         run: |
-          alembic upgrade head
-          alembic check
-      - name: Build
-        run: uv build
+          docker run --detach --name "$CI_NAME-smoke" --publish 127.0.0.1::8000 "$CI_NAME-app"
+          address=$(docker port "$CI_NAME-smoke" 8000/tcp)
+          for _ in $(seq 60); do
+            curl -fs --max-time 2 "http://$address/health" | grep -Fx '{"status":"ok"}' && exit 0
+            sleep 1
+          done
+          docker logs "$CI_NAME-smoke"
+          echo "::error::The app image did not answer /health within 60 seconds"
+          exit 1
+      - name: Install trivy 0.75.0 (checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tar.gz" \
+            https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.tar.gz
+          echo "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f  $RUNNER_TEMP/trivy.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/trivy.tar.gz" -C "$RUNNER_TEMP" trivy
+      # A fixable HIGH or CRITICAL vulnerability in the image's Debian or Python packages fails the
+      # job, and so does a HIGH or CRITICAL secret in the image (trivy's secret scanner).
+      - name: Scan the app image with trivy
+        run: >-
+          "$RUNNER_TEMP/trivy" image --no-progress --ignore-unfixed --severity HIGH,CRITICAL
+          --exit-code 1 "$CI_NAME-app"
+      - name: Remove the containers and images
+        if: always()
+        run: |
+          docker rm --force "$CI_NAME-smoke"
+          docker compose -p "$CI_NAME" down --volumes --remove-orphans
+          docker image rm --force "$CI_NAME-app" "$CI_NAME-test"
 
   # The lowest versions pyproject.toml allows for each direct dependency, not uv.lock, so the
-  # declared floors stay installable and tested.
+  # declared floors stay installable and tested: the Dockerfile's test-lowest-direct stage.
   test-lowest-direct:
     name: test-lowest-direct
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CI_NAME: ci-hunter-bargain-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          python-version: "3.12"
-          activate-environment: true
-          cache-suffix: lowest-direct
-      - name: Install the lowest direct versions
-        run: uv pip install --resolution lowest-direct -e ".[dev]"
+      - name: Build the test image with the lowest direct versions
+        run: docker build --target test-lowest-direct -t "$CI_NAME-lowest-direct" .
       # With coverage, as in the test job, so the pytest-cov floor is tested too.
       - name: Test
-        run: pytest -q --cov
+        run: docker run --rm "$CI_NAME-lowest-direct" pytest -q --cov
+      - name: Remove the image
+        if: always()
+        run: docker image rm --force "$CI_NAME-lowest-direct"
+
+  # The tests with the uv.lock versions on the newer Pythons requires-python allows: the
+  # Dockerfile's test stage, with python:3.13-slim or python:3.14-slim as its base stage.
+  test-python:
+    name: test-python-${{ matrix.python }}
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.13", "3.14"]
+    env:
+      CI_NAME: ci-hunter-bargain-${{ github.run_id }}-${{ github.run_attempt }}
+      PYTHON: ${{ matrix.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the test image on Python ${{ matrix.python }}
+        run: >-
+          docker build --target test --build-context "base=docker-image://python:$PYTHON-slim"
+          -t "$CI_NAME-test-python-$PYTHON" .
+      # Fails when the image runs another Python, e.g. after a rename of the base stage.
+      - name: Check the Python version
+        run: docker run --rm "$CI_NAME-test-python-$PYTHON" python --version | grep -F "Python $PYTHON."
+      - name: Test
+        run: docker run --rm "$CI_NAME-test-python-$PYTHON" pytest -q --cov
+      - name: Remove the image
+        if: always()
+        run: docker image rm --force "$CI_NAME-test-python-$PYTHON"
 
   secret-scan:
     name: secret-scan
