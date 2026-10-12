@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from hunter_bargain import __version__
 from hunter_bargain.api.items import router as items_router
 from hunter_bargain.api.prices import router as prices_router
+from hunter_bargain.api.runs import router as runs_router
 from hunter_bargain.config import settings
 from hunter_bargain.db import get_db, init_db
 from hunter_bargain.logging_config import configure_logging
@@ -54,6 +55,7 @@ app = FastAPI(
 # Register API routers
 app.include_router(items_router, prefix="/api/v1")
 app.include_router(prices_router, prefix="/api/v1")
+app.include_router(runs_router, prefix="/api/v1")
 
 
 def _json_safe(value: object) -> object:

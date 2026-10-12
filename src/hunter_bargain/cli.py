@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unicodedata
+from datetime import UTC, datetime
 from typing import Any
 
 import click
@@ -294,3 +295,52 @@ def _start_check_all(ctx: click.Context) -> None:
     else:
         click.secho(f"Error {resp.status_code}: {resp.text}", fg="red", err=True)
         sys.exit(1)
+
+
+def _utc_time(value: str | None) -> str:
+    """An API time (ISO 8601) as "2026-10-12 09:00:41 UTC"; "—" for none."""
+    if value is None:
+        return "—"
+    return f"{datetime.fromisoformat(value).astimezone(UTC):%Y-%m-%d %H:%M:%S} UTC"
+
+
+def _count(value: int | None) -> str:
+    """A run's count; "—" while the run lasts, or for a run from before counts were recorded."""
+    return "—" if value is None else str(value)
+
+
+_STATUS_COLORS = {"succeeded": "green", "failed": "red", "running": "yellow"}
+
+
+@cli.command()
+@click.pass_context
+def status(ctx: click.Context) -> None:
+    """Show the last price check of all items: its result, engine errors and searches used."""
+    resp = _request("GET", f"{_base_url(ctx)}/api/v1/runs?limit=1")
+    if resp.status_code != 200:
+        click.secho(f"Error {resp.status_code}: {resp.text}", fg="red", err=True)
+        sys.exit(1)
+
+    runs = resp.json()
+    if not runs:
+        click.echo("No price check of all items is recorded yet.")
+        return
+
+    run = runs[0]
+    click.secho(
+        f"Last price check of all items: {run['status']}", fg=_STATUS_COLORS.get(run["status"])
+    )
+    click.echo(f"  Started:       {_utc_time(run['started_at'])}")
+    click.echo(f"  Finished:      {_utc_time(run['finished_at'])}")
+    click.echo(f"  Items checked: {_count(run['items_checked'])}")
+    click.echo(f"  Searches used: {_count(run['searches_used'])}")
+    click.secho(
+        f"  Engine errors: {_count(run['engine_errors'])}",
+        fg="red" if run["engine_errors"] else None,
+    )
+    click.echo(f"  Alerts sent:   {_count(run['alerts_sent'])}")
+    # The run keeps counts only: each engine error's text is in the app's log.
+    if run["engine_errors"]:
+        click.echo("Some searches failed: the app's log, or 'hb check ITEM_ID', shows why.")
+    if run["status"] == "failed":
+        click.echo("An error ended the run: the app's log has the details.")

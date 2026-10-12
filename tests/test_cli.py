@@ -457,6 +457,104 @@ class TestCheck:
         assert "not found" in result.output
 
 
+# A run as GET /api/v1/runs returns it (#24).
+FINISHED_RUN = {
+    "id": 12,
+    "started_at": "2026-10-12T09:00:00.000123Z",
+    "finished_at": "2026-10-12T09:00:41.5Z",
+    "status": "succeeded",
+    "items_checked": 3,
+    "searches_used": 6,
+    "engine_errors": 0,
+    "alerts_sent": 1,
+}
+
+
+class TestStatus:
+    """#24: hb status shows the last check of all items, its errors and the searches it used."""
+
+    def test_status_shows_the_last_run(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [FINISHED_RUN])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert mock_req.call_args[0] == ("GET", "http://localhost:8000/api/v1/runs?limit=1")
+        assert result.output == (
+            "Last price check of all items: succeeded\n"
+            "  Started:       2026-10-12 09:00:00 UTC\n"
+            "  Finished:      2026-10-12 09:00:41 UTC\n"
+            "  Items checked: 3\n"
+            "  Searches used: 6\n"
+            "  Engine errors: 0\n"
+            "  Alerts sent:   1\n"
+        )
+
+    def test_status_points_to_the_engine_errors(self, runner: CliRunner):
+        run = {**FINISHED_RUN, "searches_used": 4, "engine_errors": 2}
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [run])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert "  Searches used: 4\n  Engine errors: 2\n" in result.output
+        assert result.output.endswith(
+            "Some searches failed: the app's log, or 'hb check ITEM_ID', shows why.\n"
+        )
+
+    def test_status_of_a_failed_run(self, runner: CliRunner):
+        run = {**FINISHED_RUN, "status": "failed", "items_checked": 0, "searches_used": 0}
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [run])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert result.output.startswith("Last price check of all items: failed\n")
+        assert result.output.endswith("An error ended the run: the app's log has the details.\n")
+
+    def test_status_of_a_run_that_has_not_ended(self, runner: CliRunner):
+        """A run's counts are recorded when it ends."""
+        run = {
+            **FINISHED_RUN,
+            "status": "running",
+            "finished_at": None,
+            "items_checked": None,
+            "searches_used": None,
+            "engine_errors": None,
+            "alerts_sent": None,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [run])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "Last price check of all items: running\n"
+            "  Started:       2026-10-12 09:00:00 UTC\n"
+            "  Finished:      —\n"
+            "  Items checked: —\n"
+            "  Searches used: —\n"
+            "  Engine errors: —\n"
+            "  Alerts sent:   —\n"
+        )
+
+    def test_status_without_any_run(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert result.output == "No price check of all items is recorded yet.\n"
+
+    def test_status_server_error(self, runner: CliRunner):
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(500, {"detail": "Internal Server Error"})
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 1
+        assert "Error 500" in result.output
+
+
 class TestRequestErrors:
     """#6: the CLI's own request failures end with a message and exit 1, not a traceback."""
 

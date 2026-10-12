@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
@@ -163,3 +163,33 @@ class CheckAllStarted(BaseModel):
     """POST /prices/check-all's answer: the check of all items runs in the background."""
 
     status: Literal["started"] = "started"
+
+
+# ---------- Check run schemas ----------
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """A time read back from SQLite, which drops the time zone, as the UTC time it was stored in."""
+    if value is not None and value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
+
+
+class CheckRunResponse(BaseModel):
+    """One check of all items, by the daily job or POST /prices/check-all (GET /runs)."""
+
+    id: int
+    started_at: datetime
+    finished_at: datetime | None
+    status: Literal["running", "succeeded", "failed"]
+    # Recorded when the run ends: None until then, for a run the app did not live to finish, and
+    # for runs recorded before these counts were. engine_errors counts the engine searches that
+    # failed, e.g. on a SerpAPI error response; searches_used, those that worked.
+    items_checked: int | None
+    searches_used: int | None
+    engine_errors: int | None
+    alerts_sent: int | None
+
+    model_config = {"from_attributes": True}
+
+    _utc = field_validator("started_at", "finished_at")(_as_utc)
