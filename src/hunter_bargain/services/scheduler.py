@@ -16,6 +16,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from sqlalchemy import func, select, update
+from sqlalchemy.orm import Session
 
 from hunter_bargain.config import settings
 from hunter_bargain.db import SessionLocal
@@ -37,6 +38,14 @@ scheduler = BackgroundScheduler(
 
 # A daily run missed while the app was down runs this long after the app starts.
 CATCH_UP_DELAY = dt.timedelta(minutes=1)
+
+# GET /health fails once the last successful check of all items is older than this: the daily
+# job's day, plus two hours for a run that starts late or takes long.
+MAX_SUCCESS_AGE = dt.timedelta(hours=26)
+
+# When start_scheduler started the scheduler. Until a check of all items has succeeded (a new
+# database), GET /health measures from this time instead.
+_started_at: dt.datetime | None = None
 
 # One price check of all items at a time. The daily job and POST /prices/check-all share this
 # lock, so overlapping runs cannot check, and alert on, the same items twice. It is a plain Lock
@@ -193,6 +202,8 @@ def _check_item(item_id: int) -> PriceCheckResult | None:
 
 def start_scheduler() -> None:
     """Register the daily price check job, catch up a missed daily run, start the scheduler."""
+    global _started_at
+    now = _now()
     # Without a time zone the trigger would use the host's local time.
     trigger = CronTrigger.from_crontab(settings.price_check_cron, timezone=settings.price_check_tz)
     scheduler.add_job(
@@ -202,14 +213,26 @@ def start_scheduler() -> None:
         name="Daily price check for all items",
         replace_existing=True,
     )
-    _schedule_catch_up(trigger)
+    _schedule_catch_up(trigger, now)
     scheduler.start()
+    _started_at = now
     logger.info(
         "Scheduler started — cron: %s (%s)", settings.price_check_cron, settings.price_check_tz
     )
 
 
-def _schedule_catch_up(trigger: CronTrigger) -> None:
+def _last_success(db: Session) -> dt.datetime | None:
+    """When the last successful check of all items finished, in UTC; None if none has."""
+    finished_at = db.scalar(
+        select(func.max(CheckRun.finished_at)).where(CheckRun.status == "succeeded")
+    )
+    # Stored in UTC (_now), but SQLite returns datetimes without their time zone.
+    if finished_at is not None and finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=dt.UTC)
+    return finished_at
+
+
+def _schedule_catch_up(trigger: CronTrigger, now: dt.datetime) -> None:
     """Add one check of all items, CATCH_UP_DELAY from now, if a daily run was missed.
 
     A daily run was missed if one of the trigger's run times has passed since the last
@@ -219,17 +242,11 @@ def _schedule_catch_up(trigger: CronTrigger) -> None:
     check recorded (a new database, or one upgraded from a version without check_runs) there is
     nothing to compare with, and no check is added.
     """
-    now = _now()
     with SessionLocal() as db:
-        finished_at = db.scalar(
-            select(func.max(CheckRun.finished_at)).where(CheckRun.status == "succeeded")
-        )
+        finished_at = _last_success(db)
     if finished_at is None:
         logger.info("No successful price check of all items is recorded yet: nothing to catch up.")
         return
-    # Stored in UTC (_now), but SQLite returns datetimes without their time zone.
-    if finished_at.tzinfo is None:
-        finished_at = finished_at.replace(tzinfo=dt.UTC)
     missed = trigger.get_next_fire_time(None, finished_at)
     if missed is None or missed > now:
         return
@@ -247,6 +264,31 @@ def _schedule_catch_up(trigger: CronTrigger) -> None:
         missed,
         finished_at,
         run_at,
+    )
+
+
+def health_problem(db: Session) -> str | None:
+    """Why the daily price check is not working, for GET /health; None if it is.
+
+    It is not when the scheduler is not running, or when the last successful check of all items
+    finished more than MAX_SUCCESS_AGE ago. Until one has succeeded (a new database), the time is
+    measured from the scheduler's start, so a fresh install is healthy for its first day.
+    """
+    if not scheduler.running or _started_at is None:
+        return "The scheduler is not running: no daily price check will run."
+    last_success = _last_success(db)
+    since = last_success or _started_at
+    if _now() - since <= MAX_SUCCESS_AGE:
+        return None
+    hours = MAX_SUCCESS_AGE // dt.timedelta(hours=1)
+    if last_success is None:
+        return (
+            f"No check of all items has succeeded since the app started at"
+            f" {since.isoformat(timespec='seconds')}, more than {hours} hours ago."
+        )
+    return (
+        f"The last successful check of all items finished at"
+        f" {since.isoformat(timespec='seconds')}, more than {hours} hours ago."
     )
 
 

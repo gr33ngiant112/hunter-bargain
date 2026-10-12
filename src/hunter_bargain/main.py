@@ -7,19 +7,21 @@ import logging
 import math
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Annotated
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 from hunter_bargain import __version__
 from hunter_bargain.api.items import router as items_router
 from hunter_bargain.api.prices import router as prices_router
 from hunter_bargain.config import settings
-from hunter_bargain.db import init_db
+from hunter_bargain.db import get_db, init_db
 from hunter_bargain.logging_config import configure_logging
-from hunter_bargain.services.scheduler import start_scheduler, stop_scheduler
+from hunter_bargain.services.scheduler import health_problem, start_scheduler, stop_scheduler
 
 # Configure logging; this also redacts the SerpAPI key from every log record.
 configure_logging(settings.log_level)
@@ -76,7 +78,18 @@ async def request_validation_error(_request: Request, exc: RequestValidationErro
     return JSONResponse(status_code=422, content={"detail": errors})
 
 
-@app.get("/health")
-def health_check() -> dict[str, str]:
-    """Basic health check endpoint."""
+@app.get(
+    "/health",
+    responses={503: {"description": "The daily price check is not working: detail says why"}},
+)
+def health_check(db: Annotated[Session, Depends(get_db)]) -> dict[str, str]:
+    """{"status": "ok"} while the daily price check works; otherwise 503, with the reason.
+
+    503 when the scheduler is not running, or when no check of all items has succeeded in the
+    last 26 hours, counted from the app's start until one has. Docker Compose's healthcheck reads
+    this endpoint.
+    """
+    problem = health_problem(db)
+    if problem is not None:
+        raise HTTPException(status_code=503, detail=problem)
     return {"status": "ok"}
