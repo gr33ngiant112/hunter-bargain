@@ -227,7 +227,7 @@ def test_app_entry_point_keeps_key_out_of_logs(stub_serpapi, tmp_path):
         "import hunter_bargain.main\n"
         "from hunter_bargain.services.engines import base\n"
         "from hunter_bargain.services.engines.serpapi_shopping import SerpApiShoppingEngine\n"
-        "base.SERPAPI_URL = sys.argv[1] + '/search'\n"
+        "base.SERPAPI_BASE_URL = sys.argv[1]\n"
         "SerpApiShoppingEngine('google_shopping').search('widget')\n"
         "logging.getLogger('httpx').setLevel(logging.DEBUG)\n"
         "SerpApiShoppingEngine('google_shopping').search('widget')\n"

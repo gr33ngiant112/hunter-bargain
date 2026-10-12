@@ -187,7 +187,7 @@ class StubSerpApi:
 
 def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
     """Send the engines' searches to the server at `url` instead of serpapi.com."""
-    monkeypatch.setattr(base, "SERPAPI_URL", f"{url}/search")
+    monkeypatch.setattr(base, "SERPAPI_BASE_URL", url)
     monkeypatch.setenv("no_proxy", "127.0.0.1")
 
 

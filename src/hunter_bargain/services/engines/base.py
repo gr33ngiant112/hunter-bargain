@@ -26,8 +26,8 @@ _PLAIN_USD_AMOUNT = re.compile(r"\$((?:[1-9][0-9]{0,2}(?:,[0-9]{3})+|[0-9]+)(?:\
 # A payment-plan price ends with the payment period, e.g. "$20.99/mo".
 _INSTALLMENT_SUFFIXES = ("/mo", "/wk")
 
-# SerpAPI's search endpoint. The tests point it at a local stub.
-SERPAPI_URL = "https://serpapi.com/search"
+# Where SerpAPI's endpoints are, e.g. its search at /search. The tests point it at a local stub.
+SERPAPI_BASE_URL = "https://serpapi.com"
 
 # Seconds to wait for SerpAPI to connect, and then for each read: a stalled search must not hold
 # the scheduler's job thread.
@@ -139,7 +139,9 @@ def fetch_serpapi(params: dict[str, Any]) -> dict[str, Any]:
     engine, query = params["engine"], params["q"]
     try:
         response = httpx.get(
-            SERPAPI_URL, params={**params, "output": "json"}, timeout=SERPAPI_TIMEOUT
+            f"{SERPAPI_BASE_URL}/search",
+            params={**params, "output": "json"},
+            timeout=SERPAPI_TIMEOUT,
         )
     except httpx.HTTPError as e:
         # The request URL carries the API key: log the error type and host only.
@@ -148,7 +150,7 @@ def fetch_serpapi(params: dict[str, Any]) -> dict[str, Any]:
             engine,
             query,
             type(e).__name__,
-            urlsplit(SERPAPI_URL).hostname,
+            urlsplit(SERPAPI_BASE_URL).hostname,
         )
         raise EngineError(f"request failed ({type(e).__name__})") from None
 
