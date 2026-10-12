@@ -61,7 +61,12 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # A warning fails the test that raised it: deprecations and unclosed resources surface in CI.
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # Apprise imports imghdr, which Python 3.12 deprecates (3.13 removed it, and Apprise then
+    # needs no import): a warning in a dependency, not in the app.
+    "ignore:'imghdr' is deprecated:DeprecationWarning",
+]
 
 [tool.coverage.run]
 branch = true
