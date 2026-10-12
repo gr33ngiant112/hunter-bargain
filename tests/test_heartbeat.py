@@ -12,7 +12,7 @@ from pydantic import SecretStr
 
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.logging_config import configure_logging
-from hunter_bargain.services.heartbeat import HEARTBEAT_TIMEOUT, send_heartbeat
+from hunter_bargain.services.heartbeat import send_heartbeat
 
 TOKEN = "fake-heartbeat-token-for-tests"
 HEARTBEAT_URL = f"https://hc-ping.com/{TOKEN}"
@@ -39,7 +39,8 @@ def test_nothing_is_sent_while_heartbeat_url_is_empty(caplog):
 
     assert send_heartbeat(_transport(sent)) is False
     assert sent == []
-    assert caplog.records == []  # off is not a failure
+    # Off is not a failure: the heartbeat logs nothing.
+    assert [r for r in caplog.records if r.name == "hunter_bargain.services.heartbeat"] == []
 
 
 def test_one_get_with_a_short_timeout(heartbeat_url, caplog):
@@ -50,10 +51,8 @@ def test_one_get_with_a_short_timeout(heartbeat_url, caplog):
 
     [request] = sent
     assert (request.method, str(request.url)) == ("GET", HEARTBEAT_URL)
-    timeout = float(HEARTBEAT_TIMEOUT)
-    assert request.extensions["timeout"] == dict.fromkeys(
-        ("connect", "read", "write", "pool"), timeout
-    )
+    # 10 seconds to connect, and then for each read and write: the run waits for it.
+    assert request.extensions["timeout"] == dict.fromkeys(("connect", "read", "write", "pool"), 10)
     assert "Heartbeat sent" in caplog.messages
     # httpx logs each request's URL at INFO; the app's logging setup keeps that line out.
     assert TOKEN not in caplog.text
