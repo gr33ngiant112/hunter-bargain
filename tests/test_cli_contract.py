@@ -9,7 +9,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import uvicorn
@@ -23,6 +23,7 @@ from hunter_bargain.db import get_db
 from hunter_bargain.main import app
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.services import scheduler as scheduler_module
+from hunter_bargain.services.engines.base import SearchResult
 
 EMAIL = "me@example.com"
 
@@ -204,3 +205,42 @@ def test_status_shows_the_last_check_of_all_items(hb, stub_serpapi, monkeypatch)
         "  Alerts sent:   0\n"
         "Every search failed: the app's log, or 'hb check ITEM_ID', shows why.\n"
     )
+
+
+def test_check_leaves_out_a_denylisted_merchant_and_says_to_verify_a_price(
+    hb, db_session, monkeypatch
+):
+    """#29: hb check reads merchant_excluded and verify_merchant from the API. One engine, a fake
+    patched into the searcher, finds the Widget at four offers; Scam Shop is denylisted. Corner
+    Store's $45 is the lowest that may alert, and more than 40% below the $100 median."""
+    monkeypatch.setattr(settings, "merchant_denylist", ["Scam Shop"])
+    engine = MagicMock()
+    engine.name = "fake_engine"
+    engine.search.return_value = [
+        SearchResult(
+            title="Widget", price=price, currency="USD", source="fake_engine", merchant=seller
+        )
+        for price, seller in [
+            (30.0, "Scam Shop"),
+            (45.0, "Corner Store"),
+            (100.0, "Best Buy"),
+            (100.0, "Walmart"),
+        ]
+    ]
+    hb("add", "Widget", "-e", EMAIL, "-t", "50")
+    item = db_session.query(Item).one()
+
+    with (
+        patch("hunter_bargain.services.searcher._ENGINES", [engine]),
+        patch("hunter_bargain.services.searcher.send_price_alert", return_value=True) as send,
+    ):
+        output = hb("check", str(item.id))
+
+    assert output.splitlines()[:3] == [
+        "  Widget: $45.00 (Corner Store via fake_engine) — 4 result(s)",
+        "    verify merchant: far below this check's other prices; check the seller",
+        "    1 result(s) from excluded merchants left out",
+    ]
+    assert send.call_args.kwargs["result"].merchant == "Corner Store"
+    assert send.call_args.kwargs["verify_merchant"] is True
+    assert db_session.query(PriceRecord).filter_by(item_id=item.id).count() == 4  # all saved

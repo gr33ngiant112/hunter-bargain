@@ -1446,3 +1446,135 @@ class TestAlertDedup:
 
         later = T0 + dt.timedelta(days=1)
         assert _check_at(db_session, monkeypatch, item, price, later).alert_sent is alerted
+
+
+# #29: which merchants' prices may alert (MERCHANT_DENYLIST, MERCHANT_ALLOWLIST), and a price far
+# below the check's median flagged "verify merchant". One engine finds the item at the offers.
+
+
+def _offers(*offers: tuple[float, str | None]) -> MagicMock:
+    """An engine that finds the Tracked Widget at each (price, merchant) offer."""
+    engine = MagicMock()
+    engine.name = "mock"
+    engine.search.return_value = [
+        SearchResult(
+            title="Tracked Widget", price=price, currency="USD", source="mock", merchant=merchant
+        )
+        for price, merchant in offers
+    ]
+    return engine
+
+
+def _check_offers(
+    db_session, *offers: tuple[float, str | None], target_price: float | None = 200.0
+) -> PriceCheckResult:
+    item = Item(name="Tracked Widget", notify_email="n@x.com", target_price=target_price)
+    db_session.add(item)
+    db_session.commit()
+    with patch("hunter_bargain.services.searcher._ENGINES", [_offers(*offers)]):
+        return run_price_check(item=item, db=db_session)
+
+
+class TestMerchantLists:
+    def test_denylisted_merchant_never_triggers_an_alert(self, db_session, send_alert, monkeypatch):
+        """Its lower price is saved, but the next merchant's price is the one alerted on."""
+        monkeypatch.setattr(app_settings, "merchant_denylist", ["Scam Shop"])
+
+        result = _check_offers(
+            db_session, (50.0, "Scam Shop"), (80.0, "Best Buy"), (85.0, "Walmart")
+        )
+
+        alerted = send_alert.call_args.kwargs["result"]
+        assert (alerted.price, alerted.merchant) == (80.0, "Best Buy")
+        assert (result.lowest_price, result.lowest_merchant) == (80.0, "Best Buy")
+        assert (result.results_count, result.merchant_excluded) == (3, 1)
+        assert sorted(r.price for r in db_session.query(PriceRecord)) == [50.0, 80.0, 85.0]
+
+    def test_no_alert_when_every_offer_is_from_a_denylisted_merchant(
+        self, db_session, send_alert, monkeypatch
+    ):
+        monkeypatch.setattr(app_settings, "merchant_denylist", ["Scam Shop"])
+
+        result = _check_offers(db_session, (50.0, "Scam Shop"), (60.0, " scam  SHOP "))
+
+        send_alert.assert_not_called()
+        assert (result.lowest_price, result.lowest_merchant) == (None, None)
+        assert (result.results_count, result.merchant_excluded) == (2, 2)
+        assert db_session.query(PriceRecord).count() == 2
+
+    def test_allowlist_alerts_only_on_its_merchants(self, db_session, send_alert, monkeypatch):
+        """A listing that names no merchant cannot be on the allowlist."""
+        monkeypatch.setattr(app_settings, "merchant_allowlist", ["Best Buy"])
+
+        result = _check_offers(db_session, (40.0, None), (50.0, "Walmart"), (90.0, "Best Buy"))
+
+        assert send_alert.call_args.kwargs["result"].merchant == "Best Buy"
+        assert (result.lowest_price, result.merchant_excluded) == (90.0, 2)
+
+    def test_without_lists_the_lowest_price_alerts_whoever_sells_it(self, db_session, send_alert):
+        result = _check_offers(db_session, (50.0, "Scam Shop"), (40.0, None), (80.0, "Best Buy"))
+
+        assert send_alert.call_args.kwargs["result"].price == 40.0
+        assert (result.lowest_price, result.merchant_excluded) == (40.0, 0)
+
+
+class TestVerifyMerchant:
+    def test_price_50_percent_below_the_median_is_flagged(self, db_session, send_alert):
+        result = _check_offers(db_session, (50.0, "A"), (100.0, "B"), (100.0, "C"))
+
+        assert result.verify_merchant is True
+        assert send_alert.call_args.kwargs["verify_merchant"] is True
+
+    @pytest.mark.parametrize(
+        ("prices", "flagged"),
+        [
+            ((59.99, 100.0, 100.0), True),
+            # Exactly 40% below is not "more than": 6.18 is 10.30 less 40%, though in binary
+            # floating point 10.3 * 0.6 is 6.180000000000001.
+            ((60.0, 100.0, 100.0), False),
+            ((6.18, 10.3, 10.3), False),
+            ((6.17, 10.3, 10.3), True),
+            # An even count: the median is the mean of the middle two, here 100.
+            ((59.0, 90.0, 110.0, 120.0), True),
+            ((60.0, 90.0, 110.0, 120.0), False),
+            # Two prices are too few to tell a typical price from an outlier.
+            ((10.0, 100.0), False),
+        ],
+    )
+    def test_flagged_only_more_than_40_percent_below_the_median(self, db_session, prices, flagged):
+        offers = [(price, f"Shop {i}") for i, price in enumerate(prices)]
+
+        result = _check_offers(db_session, *offers, target_price=None)
+
+        assert result.verify_merchant is flagged
+
+    def test_verify_merchant_pct_sets_how_far_below(self, db_session, monkeypatch):
+        monkeypatch.setattr(app_settings, "verify_merchant_pct", 50.0)
+
+        assert (
+            _check_offers(db_session, (51.0, "A"), (100.0, "B"), (100.0, "C")).verify_merchant
+            is False
+        )
+        assert (
+            _check_offers(db_session, (49.0, "A"), (100.0, "B"), (100.0, "C")).verify_merchant
+            is True
+        )
+
+    def test_the_median_leaves_out_merchants_that_may_not_alert(self, db_session, monkeypatch):
+        """Four listings from a denylisted seller would make the median 20; it is 100 without."""
+        monkeypatch.setattr(app_settings, "merchant_denylist", ["Scam Shop"])
+        offers = [(20.0, "Scam Shop")] * 4 + [(50.0, "Best Buy"), (100.0, "B"), (100.0, "C")]
+
+        result = _check_offers(db_session, *offers, target_price=None)
+
+        assert (result.lowest_price, result.merchant_excluded) == (50.0, 4)
+        assert result.verify_merchant is True
+
+    def test_no_flag_without_a_price(self, db_session, monkeypatch):
+        monkeypatch.setattr(app_settings, "merchant_denylist", ["Scam Shop"])
+
+        result = _check_offers(
+            db_session, (20.0, "Scam Shop"), (100.0, "Scam Shop"), (100.0, "Scam Shop")
+        )
+
+        assert (result.lowest_price, result.verify_merchant) == (None, False)
