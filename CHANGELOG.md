@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-12
+
+Upgrading from 0.4.0: read these notes first.
+
+- Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
+  for all items, must change: check-all now answers `{"status": "started"}`. Use
+  `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
+- Back up the database first: stop the app and copy its data directory (in Docker, the
+  `app-data` volume). The first start of this version marks an existing database as the schema
+  it already has, then migrates it; its rows are kept. There is nothing to run by hand.
+- Run one app process, as the image does: migrations run as the app starts, and two processes
+  starting together could both migrate the same database.
+- The database now uses SQLite's WAL mode, so recent writes can sit in `hunter_bargain.db-wal`
+  beside the database file. Back up with the app stopped and copy any `-wal` and `-shm` files
+  too, or use `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
+- Move the real settings out of the checkout. From the checkout, with the app's settings in
+  `.env`: `mkdir -p ~/.config/hunter-bargain && install -m 600 .env ~/.config/hunter-bargain/hb.env`,
+  then `cp .env.example .env` and `echo "HB_ENV_FILE=$HOME/.config/hunter-bargain/hb.env" >> .env`.
+  Copy any `HB_BIND_ADDR` or `APP_PORT` you had set into the new `.env` as well: Compose reads
+  those from the checkout's `.env` or the shell only. `docker compose up -d` then recreates the
+  app with the same settings.
+- Keywords are now required words in a listing's title. An item whose keywords were search hints
+  that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
+  stop matching: change them with `hb update ITEM_ID --keywords "..."` or
+  `PATCH /api/v1/items/{id}`.
+- The first start of this version adds the `check_runs` table; existing rows are not changed. A
+  missed daily check is caught up only once a check of all items has succeeded on this version:
+  the first start after the upgrade has no run to compare with, so it starts no extra check.
+- The first start of this version adds each item's alert state (`last_alert_price`,
+  `last_alerted_at`) to the `items` table. Existing items start without one, so an item whose
+  price is already on target is emailed once more at its next check.
+- The app now runs as uid 10001. `docker compose up --build -d` first runs the one-off
+  `data-permissions` service, which gives the existing `app-data` volume to that user, so there
+  is nothing to do by hand. The container is now named by Compose (e.g. `hunter-bargain-app-1`,
+  not `hunter-bargain-app`); `docker compose exec app ...` and `docker compose logs app` work as
+  before.
+
 ### Added
 
 - Price history (#31): `GET /api/v1/items/{id}/prices` lists an item's recorded prices, newest
@@ -133,41 +170,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dollar amount such as "$1,299.00". A comma decimal was misread: "$1.299,00" as 1.299 dollars,
   "$12,99" as 1,299 dollars and "$0,299" as 299 dollars.
 
-### Upgrading
-
-- Scripts that read the list `POST /prices/check-all` returned, or the prices `hb check` printed
-  for all items, must change: check-all now answers `{"status": "started"}`. Use
-  `POST /prices/check/{id}` or `hb check ITEM_ID` for one item's prices.
-- Back up the database first: stop the app and copy its data directory (in Docker, the
-  `app-data` volume). The first start of this version marks an existing database as the schema
-  it already has, then migrates it; its rows are kept. There is nothing to run by hand.
-- Run one app process, as the image does: migrations run as the app starts, and two processes
-  starting together could both migrate the same database.
-- The database now uses SQLite's WAL mode, so recent writes can sit in `hunter_bargain.db-wal`
-  beside the database file. Back up with the app stopped and copy any `-wal` and `-shm` files
-  too, or use `sqlite3 data/hunter_bargain.db ".backup backup.db"`.
-- Move the real settings out of the checkout. From the checkout, with the app's settings in
-  `.env`: `mkdir -p ~/.config/hunter-bargain && install -m 600 .env ~/.config/hunter-bargain/hb.env`,
-  then `cp .env.example .env` and `echo "HB_ENV_FILE=$HOME/.config/hunter-bargain/hb.env" >> .env`.
-  Copy any `HB_BIND_ADDR` or `APP_PORT` you had set into the new `.env` as well: Compose reads
-  those from the checkout's `.env` or the shell only. `docker compose up -d` then recreates the
-  app with the same settings.
-- Keywords are now required words in a listing's title. An item whose keywords were search hints
-  that titles leave out or spell another way ("noise cancelling" against "Noise Canceling") can
-  stop matching: change them with `hb update ITEM_ID --keywords "..."` or
-  `PATCH /api/v1/items/{id}`.
-- The first start of this version adds the `check_runs` table; existing rows are not changed. A
-  missed daily check is caught up only once a check of all items has succeeded on this version:
-  the first start after the upgrade has no run to compare with, so it starts no extra check.
-- The first start of this version adds each item's alert state (`last_alert_price`,
-  `last_alerted_at`) to the `items` table. Existing items start without one, so an item whose
-  price is already on target is emailed once more at its next check.
-- The app now runs as uid 10001. `docker compose up --build -d` first runs the one-off
-  `data-permissions` service, which gives the existing `app-data` volume to that user, so there
-  is nothing to do by hand. The container is now named by Compose (e.g. `hunter-bargain-app-1`,
-  not `hunter-bargain-app`); `docker compose exec app ...` and `docker compose logs app` work as
-  before.
-
 ## [0.4.0] - 2026-10-05
 
 No earlier version was tagged, and the package reported 0.1.0 until this release. The version
@@ -287,3 +289,7 @@ docs read.
 - Docker and docker-compose setup
 - Comprehensive test suite (24 tests)
 - Environment-based configuration via pydantic-settings
+
+[Unreleased]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/gr33ngiant112/hunter-bargain/releases/tag/v0.4.0
