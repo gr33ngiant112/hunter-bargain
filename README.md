@@ -178,7 +178,7 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | `PATCH` | `/items/{id}` | Update an item |
 | `DELETE` | `/items/{id}` | Delete an item |
 | `GET` | `/items/{id}/prices` | The item's recorded prices, newest first, each with its listing's `merchant`, `rating` and `reviews` when known. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
-| `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low |
+| `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low. Each day's low and median are the raw history, every merchant's prices; the two lows leave out the merchants that `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` exclude |
 
 ### Price Checks
 
