@@ -496,6 +496,62 @@ class TestCheck:
             "    2 result(s) from excluded merchants left out\n"
         )
 
+    @pytest.mark.parametrize(
+        ("details", "line"),
+        [
+            (
+                {"lowest_rating": 4.6, "lowest_reviews": "13,000", "lowest_multiple_sources": True},
+                "    rated 4.6/5 from 13,000 reviews, one of several sellers\n",
+            ),
+            ({"lowest_rating": 4.5}, "    rated 4.5/5\n"),
+            ({"lowest_reviews": "5K+"}, "    5K+ reviews\n"),
+            ({"lowest_multiple_sources": True}, "    one of several sellers\n"),
+            ({}, ""),
+        ],
+        ids=["all", "rating", "reviews", "several-sellers", "none"],
+    )
+    def test_check_shows_the_listings_rating_reviews_and_sellers(
+        self, runner: CliRunner, details, line
+    ):
+        """#29: under the price, as far as the listing gives them."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 45.0,
+            "lowest_source": "google_shopping",
+            "lowest_merchant": "Walmart",
+            "lowest_url": None,
+            "results_count": 1,
+            "records": [],
+            **details,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert (
+            result.output == f"  Item A: $45.00 (Walmart via google_shopping) — 1 result(s)\n{line}"
+        )
+
+    def test_check_strips_control_characters_from_the_review_count(self, runner: CliRunner):
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 45.0,
+            "lowest_source": "google_shopping",
+            "lowest_url": None,
+            "results_count": 1,
+            "records": [],
+            "lowest_reviews": WITH_CONTROLS,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"], color=True)
+
+        assert _control_characters(result.output) == set()
+        assert f"    {CLEANED} reviews\n" in result.output
+
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
             mock_req.return_value = _mock_response(404, {"detail": "Not found"})

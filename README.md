@@ -177,7 +177,7 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | `GET` | `/items/{id}` | Get a specific item |
 | `PATCH` | `/items/{id}` | Update an item |
 | `DELETE` | `/items/{id}` | Delete an item |
-| `GET` | `/items/{id}/prices` | The item's recorded prices, newest first. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
+| `GET` | `/items/{id}/prices` | The item's recorded prices, newest first, each with its listing's `merchant`, `rating` and `reviews` when known. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
 | `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low |
 
 ### Price Checks
@@ -232,6 +232,9 @@ Response:
   "lowest_price": 2149.00,
   "lowest_source": "google_shopping",
   "lowest_merchant": "Best Buy",
+  "lowest_rating": 4.6,
+  "lowest_reviews": "13,000",
+  "lowest_multiple_sources": true,
   "lowest_url": "https://www.google.com/shopping/product/...",
   "results_count": 5,
   "records": [...],
@@ -242,7 +245,7 @@ Response:
 }
 ```
 
-`lowest_*` and the alert come from the cheapest merchant that `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` let alert; `merchant_excluded` counts the results from the others, which are saved and counted in `results_count` all the same. Until those lists apply to the price history, its lows can still show an excluded merchant's price. `verify_merchant` is `true` when that price is more than `VERIFY_MERCHANT_PCT` percent below the median of the check's prices from merchants that may alert (with at least 3 of them): the alert then says "Verify merchant" instead of "Buy Now", and `hb check` prints a "verify merchant" line.
+`lowest_*` and the alert come from the cheapest merchant that `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` let alert; `merchant_excluded` counts the results from the others, which are saved and counted in `results_count` all the same. The 90-day and all-time lows (`low_90_days`, `all_time_low`, and the stats' lows) leave those merchants out too. A price recorded before merchants were stored has none, so it counts as a listing that names no merchant: in the lows unless `MERCHANT_ALLOWLIST` is set. `lowest_rating` (out of 5), `lowest_reviews` (as the engine gives it: Google Shopping a number, here written "13,000", Bing Shopping a string such as "5K+") and `lowest_multiple_sources` (Google Shopping only: more than one seller has the item) describe that listing when it gives them; the alert email and `hb check` show them. `verify_merchant` is `true` when that price is more than `VERIFY_MERCHANT_PCT` percent below the median of the check's prices from merchants that may alert (with at least 3 of them): the alert then says "Verify merchant" instead of "Buy Now", and `hb check` prints a "verify merchant" line.
 
 `searches_used` counts the engines' searches that worked. `engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
 
