@@ -12,7 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "fastapi>=0.133.0",  # 0.132 keeps Starlette below 1.0; Starlette 0.52.1 has known advisories
     "uvicorn[standard]>=0.32.0",
-    "sqlalchemy>=2.0.0",
+    "sqlalchemy>=2.0.16",  # 2.0.15 calls datetime.utcfromtimestamp(), deprecated in Python 3.12
     "alembic>=1.13.0",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.7.0",  # NoDecode (comma-separated ALERT_RECIPIENTS)
@@ -58,3 +58,5 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A warning fails the test that raised it: deprecations and unclosed resources surface in CI.
+filterwarnings = ["error"]
