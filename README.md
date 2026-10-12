@@ -111,7 +111,7 @@ Output:
 |---------|-------------|
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
 | 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
-| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
+| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS`. A price far below the check's other prices says "Verify merchant" instead, and merchants can be denied or allowed |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
 | 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `history`, `status` — full CRUD from your terminal |
@@ -236,9 +236,13 @@ Response:
   "results_count": 5,
   "records": [...],
   "engine_errors": [],
-  "searches_used": 2
+  "searches_used": 2,
+  "merchant_excluded": 0,
+  "verify_merchant": false
 }
 ```
+
+`lowest_*` and the alert come from the cheapest merchant that `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` let alert; `merchant_excluded` counts the results from the others, which are saved and counted in `results_count` all the same. Until those lists apply to the price history, its lows can still show an excluded merchant's price. `verify_merchant` is `true` when that price is more than `VERIFY_MERCHANT_PCT` percent below the median of the check's prices from merchants that may alert (with at least 3 of them): the alert then says "Verify merchant" instead of "Buy Now", and `hb check` prints a "verify merchant" line.
 
 `searches_used` counts the engines' searches that worked. `engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
 
@@ -305,6 +309,9 @@ All configuration is via environment variables (`.env` file, or the file `HB_ENV
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
 | `ALERT_MIN_DROP_PCT` | `0` | How far below an item's last alert price, in percent, a new low must be to send another alert; `0` alerts on any lower price. At least 0 and less than 100 |
 | `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
+| `MERCHANT_DENYLIST` | — | Comma-separated merchant names (a listing's seller), e.g. `Scam Shop,Too Good Deals`, whose prices never alert. Whole names, compared ignoring ASCII case and extra spaces; their listings are still saved. A name that contains a comma can't be listed |
+| `MERCHANT_ALLOWLIST` | — | Comma-separated merchant names: when set, only these merchants' prices alert, and a listing that names no merchant cannot. A merchant on both lists never alerts. Unset: every merchant not denied |
+| `VERIFY_MERCHANT_PCT` | `40` | The price an alert reports says "Verify merchant" instead of "Buy Now" when it is more than this percent below the median of the same check's prices from merchants that may alert (at least 3). Above 0 and below 100 |
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ`. `/health` fails once a check is overdue by its schedule ([Health](#health)) |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
 | `HEARTBEAT_URL` | — | A push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a 10-second timeout, after each price check of all items that succeeds; the monitor raises the alarm when it stops. Empty: off. The URL holds the monitor's token, so it is never logged: a failed ping is a warning with the HTTP status or error type only |

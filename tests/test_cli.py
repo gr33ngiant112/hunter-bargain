@@ -448,6 +448,54 @@ class TestCheck:
             "\n" in result.output
         )
 
+    def test_check_says_to_verify_a_price_far_below_the_others(self, runner: CliRunner):
+        """#29: verify_merchant, and the results whose merchants may not alert."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 45.0,
+            "lowest_source": "google_shopping",
+            "lowest_merchant": "Corner Store",
+            "lowest_url": "https://example.com/item-a",
+            "results_count": 4,
+            "records": [],
+            "merchant_excluded": 1,
+            "verify_merchant": True,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "  Item A: $45.00 (Corner Store via google_shopping) — 4 result(s)\n"
+            "    -> https://example.com/item-a\n"
+            "    verify merchant: far below this check's other prices; check the seller\n"
+            "    1 result(s) from excluded merchants left out\n"
+        )
+
+    def test_check_when_every_result_is_from_an_excluded_merchant(self, runner: CliRunner):
+        """Not "no results found": there were results, from merchants that may not alert."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": None,
+            "lowest_source": None,
+            "lowest_url": None,
+            "results_count": 2,
+            "records": [],
+            "merchant_excluded": 2,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "  Item A: no prices from merchants that may alert\n"
+            "    2 result(s) from excluded merchants left out\n"
+        )
+
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
             mock_req.return_value = _mock_response(404, {"detail": "Not found"})
