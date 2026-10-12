@@ -28,7 +28,7 @@ Think of it as a deal-hunting laptop that *actually* does useful work.
 
 - **Multi-engine search** — Queries Google Shopping and Bing Shopping simultaneously via [SerpAPI](https://serpapi.com/)
 - **Smart filtering** — Model-number and keyword matching, price floor detection, and accessory and second-hand filtering so you get the actual product, not a phone case, an older model or a refurbished one
-- **Email alerts** — Styled HTML emails with a "Buy Now" button when your target price is hit
+- **Email or push alerts** — Styled HTML emails with a "Buy Now" button when your target price is hit, or push notifications through [Apprise](https://github.com/caronc/apprise) (ntfy, Gotify, Discord, Telegram and more)
 - **Scheduled checks** — Automatic daily price checks via APScheduler (configurable cron)
 - **On-demand checks** — Trigger a price check anytime via API or CLI
 - **CLI tool (`hb`)** — Full item management from your terminal
@@ -111,7 +111,7 @@ Output:
 |---------|-------------|
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
 | 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
-| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
+| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS`. Without SMTP settings, the alert is written to the log. `NOTIFIER=apprise` sends alerts as push notifications instead |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
 | 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `history`, `status` — full CRUD from your terminal |
@@ -258,7 +258,7 @@ src/hunter_bargain/
 │   └── runs.py          # GET /api/v1/runs: each price check of all items
 └── services/
     ├── searcher.py      # Multi-engine orchestrator + relevance filtering
-    ├── notifier.py      # SMTP email alerts with HTML templates
+    ├── notifier.py      # Alerts by SMTP email (HTML templates) or Apprise push
     ├── scheduler.py     # APScheduler daily cron job
     └── engines/
         ├── base.py      # SearchEngine ABC + SearchResult dataclass
@@ -305,6 +305,8 @@ All configuration is via environment variables (`.env` file, or the file `HB_ENV
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
 | `ALERT_MIN_DROP_PCT` | `0` | How far below an item's last alert price, in percent, a new low must be to send another alert; `0` alerts on any lower price. At least 0 and less than 100 |
 | `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
+| `NOTIFIER` | `smtp` | Where price alerts and notices go. `smtp`: email, with the `SMTP_*` settings; while SMTP is not configured, a price alert is written to the log instead (one warning with the item id, price, target and engine, without the address) and tried again at the next check. `apprise`: the service `APPRISE_URL` names. Any other value stops the app at startup |
+| `APPRISE_URL` | — | For `NOTIFIER=apprise`: an [Apprise URL](https://github.com/caronc/apprise/wiki), e.g. `ntfy://ntfy.example.com/hunter-bargain` for an ntfy topic; `NOTIFIER=apprise` without it stops the app at startup. It can hold the service's token, so it is never logged, and Apprise's own log is off: a failed send is a warning without the URL ([Push notifications](#push-notifications)) |
 | `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ`. `/health` fails once a check is overdue by its schedule ([Health](#health)) |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
 | `HEARTBEAT_URL` | — | A push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a 10-second timeout, after each price check of all items that succeeds; the monitor raises the alarm when it stops. Empty: off. The URL holds the monitor's token, so it is never logged: a failed ping is a warning with the HTTP status or error type only |
@@ -333,7 +335,8 @@ docker compose up --build -d
   they stop
 - SerpAPI searches: after each check of all items, the app reads the account's searches left from
   SerpAPI's Account API, which costs no search. With fewer left than two checks of all items
-  make, it logs a warning and emails it to `ALERT_RECIPIENTS` (when SMTP is set up), after every
+  make, it logs a warning and sends it through the notifier (to `ALERT_RECIPIENTS` when SMTP is
+  set up, or with `NOTIFIER=apprise`), after every
   check until the plan renews or more searches are bought. The API key and the account's email
   address in that answer are never logged, stored or returned
 - SQLite data persisted via Docker volume (`app-data`)
@@ -384,6 +387,26 @@ docker compose --profile dev up -d mailpit # Mailpit alone, for uvicorn: set SMT
 ```
 
 If `.env` sets `HB_ENV_FILE`, the app gets the real settings instead; `HB_ENV_FILE=.env docker compose --profile dev up` overrides it.
+
+### Push notifications
+
+With `NOTIFIER=apprise`, alerts and notices go to the service `APPRISE_URL` names instead of
+email. To check that a notification arrives, here on a local ntfy server, send one with the app's
+own notifier and log setup (importing `hunter_bargain.main` sets up the log; it starts nothing):
+
+```bash
+docker run -d --name hb-ntfy -p 127.0.0.1:8090:80 binwiederhier/ntfy:v2 serve
+NOTIFIER=apprise APPRISE_URL=ntfy://127.0.0.1:8090/hunter-bargain-test python -c "import hunter_bargain.main
+from hunter_bargain.services.notifier import send_notice
+print(send_notice('hunter-bargain', 'It works.'))"
+# Prints True, and the topic now holds the message:
+python -c "import httpx; print(httpx.get('http://127.0.0.1:8090/hunter-bargain-test/json?poll=1').text)"
+docker rm -f hb-ntfy
+```
+
+A send that fails prints `False`, with a warning in the log that names neither the URL nor its
+token. Apprise's own log stays off because it quotes the URL; to see why a URL fails, run
+`apprise -vv -b "test" "<the URL>"` (Apprise's command line, in the venv).
 
 ## Development
 
