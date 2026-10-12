@@ -153,7 +153,7 @@ database error, ended the run for every item after it.
 The first line is `type: summary`, with an optional scope (`fix(cli): ...`) and `!` for a
 breaking change (`feat!: ...`). Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`.
 The commit-msg hook checks this, and CI checks every commit a pull request adds. Git's own merge,
-revert, `fixup!`, `squash!` and `amend!` messages pass.
+revert, reapply, `fixup!`, `squash!` and `amend!` messages pass.
 
 ## Pull Request Process
 

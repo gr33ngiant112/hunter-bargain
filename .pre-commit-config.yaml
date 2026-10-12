@@ -26,11 +26,12 @@ repos:
         types: [python]
         pass_filenames: false
       # CONTRIBUTING.md "Commit Messages": a type from its list, an optional (scope) and `!`, then
-      # ": " and the summary. Git's own merge, revert, fixup!, squash! and amend! messages pass.
+      # ": " and the summary. Git's own merge, revert, reapply (a revert of a revert), fixup!,
+      # squash! and amend! messages pass.
       # CI runs this hook on every commit a pull request adds.
       - id: commit-message
         name: commit message
         language: pygrep
-        entry: '\A(?:(?:feat|fix|refactor|docs|test|chore|ci)(?:\([\w./-]+\))?!?: \S|Merge |Revert "|(?:fixup|squash|amend)! )'
+        entry: '\A(?:(?:feat|fix|refactor|docs|test|chore|ci)(?:\([\w./-]+\))?!?: \S|Merge |Revert "|Reapply "|(?:fixup|squash|amend)! )'
         args: [--multiline, --negate]
         stages: [commit-msg]
