@@ -779,3 +779,39 @@ def test_no_heartbeat_without_heartbeat_url(db_session, three_items, heartbeats,
     assert _statuses(db_session) == ["succeeded"]
     assert _counts(db_session) == [(3, 0, 0, 0)]
     assert heartbeats == []
+
+
+# #24: after each run that ends, the searches it made, those that failed included, go to the
+# check of SerpAPI's searches left (services/quota.py, tested in test_quota.py).
+
+
+@pytest.mark.parametrize(
+    ("searches_used", "engine_errors", "status"),
+    [(2, [], "succeeded"), (1, QUOTA_ERRORS[1:], "succeeded"), (0, QUOTA_ERRORS, "failed")],
+    ids=["all worked", "one failed", "all failed"],
+)
+def test_searches_left_are_checked_with_the_searches_a_run_made(
+    db_session, three_items, searches_used, engine_errors, status
+):
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        return _empty_result(item).model_copy(
+            update={"searches_used": searches_used, "engine_errors": engine_errors}
+        )
+
+    with patch("hunter_bargain.services.scheduler.check_searches_left") as check:
+        _run_job(db_session, fake_check)
+
+    assert _statuses(db_session) == [status]
+    check.assert_called_once_with(3 * (searches_used + len(engine_errors)))
+
+
+def test_searches_left_are_not_checked_after_a_run_that_an_error_ended(db_session, three_items):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch.object(Session, "scalars", side_effect=LIST_ITEMS_FAILS),
+        patch("hunter_bargain.services.scheduler.check_searches_left") as check,
+        pytest.raises(OperationalError),
+    ):
+        _run_daily_job()
+
+    check.assert_not_called()

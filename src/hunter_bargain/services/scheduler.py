@@ -24,6 +24,7 @@ from hunter_bargain.db import SessionLocal
 from hunter_bargain.models import CheckRun, Item
 from hunter_bargain.schemas import PriceCheckResult
 from hunter_bargain.services.heartbeat import send_heartbeat
+from hunter_bargain.services.quota import check_searches_left
 from hunter_bargain.services.searcher import run_price_check
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,8 @@ def _check_all_items() -> None:
     Runs in a background thread, outside any request, so it opens its own sessions: one to list
     the item ids, then one per item. An item deleted during the run is skipped, and a failed
     check rolls back only its own session, so neither stops the rest of the run. Once the run is
-    recorded as succeeded, the heartbeat goes out (HEARTBEAT_URL, services/heartbeat.py).
+    recorded as succeeded, the heartbeat goes out (HEARTBEAT_URL, services/heartbeat.py). After
+    any run that ends, SerpAPI's searches left are checked (services/quota.py).
     """
     logger.info("Price check of all items starting...")
     with _recorded_run() as counts:
@@ -200,6 +202,7 @@ def _check_all_items() -> None:
     logger.info("Price check of all items complete.")
     if not counts.every_search_failed:  # recorded as succeeded
         send_heartbeat()
+    check_searches_left(counts.searches_used + counts.engine_errors)
 
 
 def _check_item(item_id: int) -> PriceCheckResult | None:

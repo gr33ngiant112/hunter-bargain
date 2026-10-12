@@ -332,6 +332,10 @@ docker compose up --build -d
 - Alarms from outside the app: set `HEARTBEAT_URL` to a push monitor's URL (healthchecks.io, Uptime
   Kuma), and it hears from the app after each successful check of all items, so it notices when
   they stop
+- SerpAPI searches: after each check of all items, the app reads the account's searches left from
+  SerpAPI's Account API, which costs no search. With fewer left than two checks of all items
+  make, it logs a warning and emails it to `ALERT_RECIPIENTS` (when SMTP is set up). The API key
+  and the account's email address in that answer are never logged, stored or returned
 - SQLite data persisted via Docker volume (`app-data`)
 - The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
   `data-permissions` service gives the `app-data` volume to that user, so a volume from an
