@@ -512,6 +512,21 @@ class TestStatus:
         assert result.output.startswith("Last price check of all items: failed\n")
         assert result.output.endswith("An error ended the run: the app's log has the details.\n")
 
+    def test_status_of_a_run_whose_every_search_failed(self, runner: CliRunner):
+        """Recorded as failed, though no error ended it: e.g. SerpAPI refused every search."""
+        run = {**FINISHED_RUN, "status": "failed", "searches_used": 0, "engine_errors": 6}
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [run])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert result.output.startswith("Last price check of all items: failed\n")
+        assert result.output.endswith(
+            "  Engine errors: 6\n"
+            "  Alerts sent:   1\n"
+            "Every search failed: the app's log, or 'hb check ITEM_ID', shows why.\n"
+        )
+
     def test_status_of_a_run_that_has_not_ended(self, runner: CliRunner):
         """A run's counts are recorded when it ends."""
         run = {

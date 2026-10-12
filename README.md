@@ -193,11 +193,11 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 |--------|----------|-------------|
 | `GET` | `/runs` | The latest price checks of all items (the daily job's and `/prices/check-all`'s), newest first: `?limit=` (default 10, at most 100) |
 
-Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
+Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it, or every search it tried failed, e.g. with a revoked key or no SerpAPI searches left), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
 
 ### Health
 
-`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items finished more than 26 hours ago. Until a check has succeeded (a new database), the 26 hours count from the app's start. After the app was down for more than a day, it answers 503 until the catch-up check, a minute after the start, succeeds. Docker Compose's healthcheck reads it.
+`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items finished more than 26 hours ago; a check whose every search failed is not a success. Until a check has succeeded (a new database), the 26 hours count from the app's start. After the app was down for more than a day, it answers 503 until the catch-up check, a minute after the start, succeeds. Docker Compose's healthcheck reads it.
 
 ### Example: Create an item
 

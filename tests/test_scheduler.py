@@ -651,3 +651,42 @@ def test_serpapi_error_response_is_recorded_as_an_engine_error(
 
     send.assert_called_once()
     assert _counts(db_session) == [(1, 1, 1, 1)]
+
+
+@both_entry_points
+def test_run_whose_every_search_failed_is_recorded_as_failed(
+    db_session, three_items, run_all, caplog
+):
+    """SerpAPI refused every search (no searches left, a revoked key): the run checked nothing,
+    so /health, the heartbeat and the catch-up at the next start treat it as failed (#24)."""
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        return _empty_result(item).model_copy(update={"engine_errors": QUOTA_ERRORS})
+
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=fake_check),
+        caplog.at_level(logging.ERROR, logger="hunter_bargain.services.scheduler"),
+    ):
+        run_all()
+
+    assert [status for status, _, _ in _runs(db_session)] == ["failed"]
+    assert _counts(db_session) == [(3, 0, 6, 0)]
+    assert _messages(caplog, logging.ERROR) == [
+        "Price check of all items failed: all 6 of its searches failed"
+    ]
+
+
+def test_run_with_one_search_that_worked_still_succeeds(db_session, three_items):
+    """Only a run whose every search failed is failed: one that worked is a partial success."""
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        searches_used = 1 if item.id == three_items[-1] else 0
+        return _empty_result(item).model_copy(
+            update={"searches_used": searches_used, "engine_errors": QUOTA_ERRORS[searches_used:]}
+        )
+
+    _run_job(db_session, fake_check)
+
+    assert [status for status, _, _ in _runs(db_session)] == ["succeeded"]
+    assert _counts(db_session) == [(3, 1, 5, 0)]

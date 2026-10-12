@@ -408,8 +408,11 @@ def status(ctx: click.Context) -> None:
         fg="red" if run["engine_errors"] else None,
     )
     click.echo(f"  Alerts sent:   {_count(run['alerts_sent'])}")
-    # The run keeps counts only: each engine error's text is in the app's log.
+    # The run keeps counts only: each engine error's text is in the app's log. A run whose every
+    # search failed is recorded as failed without an error that ended it.
+    every_search_failed = bool(run["engine_errors"]) and not run["searches_used"]
     if run["engine_errors"]:
-        click.echo("Some searches failed: the app's log, or 'hb check ITEM_ID', shows why.")
-    if run["status"] == "failed":
+        searches = "Every search" if every_search_failed else "Some searches"
+        click.echo(f"{searches} failed: the app's log, or 'hb check ITEM_ID', shows why.")
+    if run["status"] == "failed" and not every_search_failed:
         click.echo("An error ended the run: the app's log has the details.")

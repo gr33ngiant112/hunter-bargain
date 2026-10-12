@@ -118,15 +118,22 @@ class _RunCounts:
         self.engine_errors += len(result.engine_errors)
         self.alerts_sent += int(result.alert_sent)
 
+    @property
+    def every_search_failed(self) -> bool:
+        """True if the run tried searches and none of them worked, e.g. with a revoked key, no
+        searches left or SerpAPI down: it checked nothing, so it is recorded as failed (#24)."""
+        return self.searches_used == 0 and self.engine_errors > 0
+
 
 @contextmanager
 def _recorded_run() -> Iterator[_RunCounts]:
     """Record the check of all items that runs in the block as a check_runs row.
 
     The row is committed as "running" before the block runs. When the block ends it gets its
-    finished_at, "succeeded" (or "failed" if an exception ended the block) and the counts the
-    block added to the _RunCounts it was given. A run the process does not live to finish stays
-    "running", without counts. Each write uses a short session of its own.
+    finished_at, "succeeded" (or "failed" if an exception ended the block or every search it
+    tried failed) and the counts the block added to the _RunCounts it was given. A run the
+    process does not live to finish stays "running", without counts. Each write uses a short
+    session of its own.
     """
     with SessionLocal() as db:
         run = CheckRun(started_at=_now(), status="running")
@@ -137,7 +144,13 @@ def _recorded_run() -> Iterator[_RunCounts]:
     status = "failed"
     try:
         yield counts
-        status = "succeeded"
+        if counts.every_search_failed:
+            logger.error(
+                "Price check of all items failed: all %d of its searches failed",
+                counts.engine_errors,
+            )
+        else:
+            status = "succeeded"
     finally:
         with SessionLocal() as db:
             db.execute(
