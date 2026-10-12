@@ -188,14 +188,19 @@ def test_status_shows_the_last_check_of_all_items(hb, stub_serpapi, monkeypatch)
         "  Alerts sent:   1\n"
     )
 
-    # SerpAPI refuses both searches: the account has run out of them.
+    # SerpAPI refuses both searches: the account has run out of them. A run whose every search
+    # failed checked nothing, so it is recorded as failed.
     stub_serpapi.status = 429
     stub_serpapi.body = json.dumps({"error": "Your account has run out of searches."})
     hb("check")
     _wait_for_the_run_to_end()
-    output = hb("status")
-    assert output.startswith("Last price check of all items: succeeded\n")
-    assert "  Items checked: 1\n  Searches used: 0\n  Engine errors: 2\n  Alerts sent:   0\n" in (
-        output
+    assert hb("status") == (
+        "Last price check of all items: failed\n"
+        "  Started:       2026-10-12 09:00:41 UTC\n"
+        "  Finished:      2026-10-12 09:00:41 UTC\n"
+        "  Items checked: 1\n"
+        "  Searches used: 0\n"
+        "  Engine errors: 2\n"
+        "  Alerts sent:   0\n"
+        "Every search failed: the app's log, or 'hb check ITEM_ID', shows why.\n"
     )
-    assert "Some searches failed" in output

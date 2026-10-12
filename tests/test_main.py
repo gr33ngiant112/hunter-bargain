@@ -8,6 +8,7 @@ import pytest
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session, sessionmaker
 
+from hunter_bargain.config import settings
 from hunter_bargain.models import CheckRun
 from hunter_bargain.services import scheduler as scheduler_module
 
@@ -26,13 +27,22 @@ class Clock:
 
 
 @pytest.fixture
-def clock(client, db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[Clock]:
+def cron(request: pytest.FixtureRequest) -> str:
+    """PRICE_CHECK_CRON for the clock fixture: the default, or a test's indirect parameter."""
+    return getattr(request, "param", "0 9 * * *")
+
+
+@pytest.fixture
+def clock(
+    client, db_session: Session, monkeypatch: pytest.MonkeyPatch, cron: str
+) -> Iterator[Clock]:
     """The app's scheduler, started at STARTED, and its clock, which a test moves on.
 
     The client fixture leaves the scheduler out of the app's startup; this runs the real
     start_scheduler, on a fresh scheduler started paused so that no job runs, with the check_runs
-    records in the test database.
+    records in the test database and `cron` as PRICE_CHECK_CRON (in UTC).
     """
+    monkeypatch.setattr(settings, "price_check_cron", cron)
     clock = Clock(STARTED)
     monkeypatch.setattr(scheduler_module, "_now", clock)
     monkeypatch.setattr(
@@ -43,7 +53,7 @@ def clock(client, db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Itera
     fresh = BackgroundScheduler()
     monkeypatch.setattr(fresh, "start", functools.partial(fresh.start, paused=True))
     monkeypatch.setattr(scheduler_module, "scheduler", fresh)
-    monkeypatch.setattr(scheduler_module, "_started_at", None)  # restored after the test
+    monkeypatch.setattr(scheduler_module, "_started", None)  # restored after the test
     scheduler_module.start_scheduler()
     yield clock
     if fresh.running:
@@ -150,3 +160,33 @@ def test_last_success_counts_from_before_the_app_started(client, clock, db_sessi
     assert resp.json()["detail"].startswith(
         "The last successful check of all items finished at 2026-10-04T10:00:00+00:00"
     )
+
+
+@pytest.mark.parametrize(
+    ("cron", "limit"),
+    [
+        # An hour between runs, plus 2 hours.
+        ("0 * * * *", dt.timedelta(hours=3)),
+        # Weekdays only: the weekend's 72 hours are the longest gap, whatever day the app starts
+        # (a Tuesday here, when the next two runs are a day apart).
+        ("0 9 * * 1-5", dt.timedelta(hours=74)),
+        ("0 9 * * 1", dt.timedelta(days=7, hours=2)),
+    ],
+    indirect=["cron"],
+    ids=["hourly", "weekdays", "weekly"],
+)
+def test_age_limit_is_the_longest_gap_between_scheduled_runs_plus_2_hours(
+    client, clock, db_session, cron, limit
+):
+    """26 hours for the default daily schedule (the tests above); other schedules get theirs."""
+    finished = STARTED + dt.timedelta(minutes=5)
+    _add_run(db_session, "succeeded", finished)
+
+    clock.now = finished + limit
+    assert client.get("/health").status_code == 200
+
+    clock.now = finished + limit + dt.timedelta(seconds=1)
+    resp = client.get("/health")
+    assert resp.status_code == 503
+    hours = limit / dt.timedelta(hours=1)
+    assert resp.json()["detail"].endswith(f", more than {hours:g} hours ago.")
