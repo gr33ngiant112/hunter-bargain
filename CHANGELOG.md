@@ -105,6 +105,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A price that stays at or below an item's target is emailed once, not at every check: the next
   alert needs a lower price, or 7 days (`ALERT_COOLDOWN_DAYS`). A failed send is tried again at
   the next check, and a new `target_price` starts the item's alerts over.
+- A search result without SerpAPI's `extracted_price` is skipped unless its price is a plain
+  dollar amount such as "$1,299.00". A comma decimal was misread: "$1.299,00" as 1.299 dollars
+  and "$12,99" as 1,299 dollars.
 
 ### Upgrading
 

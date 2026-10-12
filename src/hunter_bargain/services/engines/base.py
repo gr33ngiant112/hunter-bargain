@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 # A US dollar price as SerpAPI shows it for US results: "$" and then the amount, e.g. "$1,299.00".
 _USD_PRICE = re.compile(r"\$\d")
 
+# A plain dollar amount: "$", whole dollars with or without comma thousands separators, and at
+# most two decimals, e.g. "$1,299.00" or "$29.99". Comma decimals ("$1.299,00", "$12,99") and a
+# dot between thousands ("$1.299") do not match: read the US way, they are off by a factor of
+# 100 or 1000.
+_PLAIN_USD_AMOUNT = re.compile(r"\$((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?)")
+
 # A payment-plan price ends with the payment period, e.g. "$20.99/mo".
 _INSTALLMENT_SUFFIXES = ("/mo", "/wk")
 
@@ -76,6 +82,19 @@ def is_usd_price(price: object) -> bool:
     plain "$" cannot tell other dollar currencies apart, so it counts as USD.
     """
     return isinstance(price, str) and _USD_PRICE.match(price.strip()) is not None
+
+
+def parse_usd_amount(price: object) -> float | None:
+    """Return the amount of a plain dollar price string, e.g. 1299.0 for "$1,299.00".
+
+    The engines read a row's price string only when the row has no extracted_price. Any other
+    string gives None, so the row is skipped rather than compared at a wrong amount: a comma
+    decimal ("$1.299,00" read as 1.299), a monthly or "From" price, or another currency (#30).
+    """
+    if not isinstance(price, str):
+        return None
+    match = _PLAIN_USD_AMOUNT.fullmatch(price.strip())
+    return float(match.group(1).replace(",", "")) if match else None
 
 
 def is_installment_offer(row: dict[str, Any], installment_key: str) -> bool:

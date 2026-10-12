@@ -12,6 +12,7 @@ from hunter_bargain.services.engines.base import (
     fetch_serpapi,
     is_installment_offer,
     is_usd_price,
+    parse_usd_amount,
     usable_price,
 )
 
@@ -56,7 +57,7 @@ class BingShoppingEngine(SearchEngine):
                 continue
             price = item.get("extracted_price")
             if price is None:
-                price = _parse_price(price_str)
+                price = parse_usd_amount(price_str)
             # A bad row is skipped on its own; the other rows still count.
             price = usable_price(price)
             if price is None:
@@ -83,14 +84,3 @@ class BingShoppingEngine(SearchEngine):
         results.sort(key=lambda r: r.price)
         logger.info("Bing Shopping: found %d results for %r", len(results), query)
         return results
-
-
-def _parse_price(price_str: str) -> float | None:
-    """Extract a numeric price from a string like '$1,299.00'."""
-    if not price_str:
-        return None
-    cleaned = price_str.replace("$", "").replace(",", "").strip()
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None

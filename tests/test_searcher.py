@@ -12,10 +12,10 @@ from requests.adapters import HTTPAdapter
 from hunter_bargain.config import settings as app_settings
 from hunter_bargain.models import Item, PriceRecord
 from hunter_bargain.schemas import PriceCheckResult
-from hunter_bargain.services.engines import base, bing, google
+from hunter_bargain.services.engines import base
 from hunter_bargain.services.engines.base import SearchResult
 from hunter_bargain.services.engines.bing import BingShoppingEngine
-from hunter_bargain.services.engines.google import GoogleShoppingEngine, _parse_price
+from hunter_bargain.services.engines.google import GoogleShoppingEngine
 from hunter_bargain.services.searcher import (
     _build_query,
     _has_accessory_extension,
@@ -156,8 +156,14 @@ BAD_EXTRACTED_PRICES = [
     pytest.param(-5.88, id="negative"),
     pytest.param(10**400, id="int-too-large-for-float"),
 ]
-# Dollar price strings whose parsed amount is not usable, for rows without extracted_price.
-BAD_PRICE_STRINGS = [pytest.param("$0.00", id="zero"), pytest.param("$1e999", id="infinity")]
+# Dollar price strings that give no usable amount, for rows without extracted_price: zero, and
+# strings that are not a plain dollar amount, which read as 1.299 and 1299.0 before #30.
+BAD_PRICE_STRINGS = [
+    pytest.param("$0.00", id="zero"),
+    pytest.param("$1e999", id="infinity"),
+    pytest.param("$1.299,00", id="comma-decimal"),
+    pytest.param("$12,99", id="comma-cents"),
+]
 
 # SerpAPI's documented error responses, https://serpapi.com/api-status-and-error-codes (fetched
 # 2026-10-05), with "..." parts of the examples left out.
@@ -260,30 +266,62 @@ def _tracked_item(db_session, name: str, target_price: float) -> Item:
 
 
 class TestParsePrice:
-    """Tests for the price string parser."""
+    """The price string parser both engines use for a row without extracted_price."""
 
     def test_standard_price(self):
-        assert _parse_price("$1,299.00") == 1299.00
+        assert base.parse_usd_amount("$1,299.00") == 1299.00
 
     def test_no_comma(self):
-        assert _parse_price("$29.99") == 29.99
+        assert base.parse_usd_amount("$29.99") == 29.99
 
     def test_empty_string(self):
-        assert _parse_price("") is None
+        assert base.parse_usd_amount("") is None
 
     def test_none(self):
-        assert _parse_price(None) is None
+        assert base.parse_usd_amount(None) is None
 
     def test_invalid(self):
-        assert _parse_price("free") is None
+        assert base.parse_usd_amount("free") is None
+
+    @pytest.mark.parametrize("price_str", ["$20.99/mo", "From $999"])
+    def test_monthly_or_from_price_is_not_a_number(self, price_str):
+        """The fallback parser gives no number for a monthly price or a "From" price (#35)."""
+        assert base.parse_usd_amount(price_str) is None
 
     @pytest.mark.parametrize(
-        "parse", [google._parse_price, bing._parse_price], ids=["google", "bing"]
+        ("price_str", "expected"),
+        [
+            ("$1,299", 1299.0),
+            ("$1299", 1299.0),
+            ("$1,234,567.89", 1234567.89),
+            ("$29.9", 29.9),
+            ("$0.99", 0.99),
+            (" $5.88 ", 5.88),
+        ],
     )
-    @pytest.mark.parametrize("price_str", ["$20.99/mo", "From $999"])
-    def test_monthly_or_from_price_is_not_a_number(self, parse, price_str):
-        """The fallback parser gives no number for a monthly price or a "From" price (#35)."""
-        assert parse(price_str) is None
+    def test_plain_dollar_amount(self, price_str, expected):
+        assert base.parse_usd_amount(price_str) == expected
+
+    @pytest.mark.parametrize(
+        "price_str",
+        [
+            "1.299,00",  # a comma decimal, read as 1.299 before #30
+            "$1.299,00",
+            "$12,99",  # read as 1299.0 before #30
+            "$1,29",
+            "$1.299",  # 1,299 dollars with a dot between thousands, or 1.299 dollars
+            "$1,2999.00",  # a thousands group of four digits, read as 12999.0 before #30
+            "£1,299",
+            "US$1,299.00",
+            "$1e999",
+            "$\u0661\u0662\u0663",  # Arabic-Indic digits, which float() would read as 123
+            "$",
+            "$.99",
+        ],
+    )
+    def test_not_a_plain_dollar_amount(self, price_str):
+        """Any other string gives None, so the row is skipped rather than priced wrong (#30)."""
+        assert base.parse_usd_amount(price_str) is None
 
 
 class TestPriceChecks:
