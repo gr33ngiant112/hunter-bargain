@@ -79,8 +79,10 @@ ruff format .
 
 ### Pre-commit Hooks
 
-Ruff, mypy (on `src`), a YAML check and a private-key check run before every commit, whichever
-editor or agent makes it. Install the hooks once per clone, inside the venv:
+Ruff, mypy (on `src`), a YAML check and a private-key check run before every commit, and a check
+of the commit message after you write it, whichever editor or agent makes the commit. Install the
+hooks once per clone, inside the venv. A clone set up before the message check needs
+`pre-commit install` once more:
 
 ```bash
 pre-commit install
@@ -148,7 +150,10 @@ One shared session meant that an item deleted during the run, or one
 database error, ended the run for every item after it.
 ```
 
-Prefixes: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`, `ci:`
+The first line is `type: summary`, with an optional scope (`fix(cli): ...`) and `!` for a
+breaking change (`feat!: ...`). Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`.
+The commit-msg hook checks this, and CI checks every commit a pull request adds. Git's own merge,
+revert, `fixup!`, `squash!` and `amend!` messages pass.
 
 ## Pull Request Process
 

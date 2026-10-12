@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again
 - `alert_sent` in the result of `POST /api/v1/prices/check/{item_id}`: whether the check emailed
   an alert
+- A commit-message check: a commit-msg hook and a CI job reject a first line that does not start
+  with a type from CONTRIBUTING.md (`feat:`, `fix(cli):` and so on). In a clone set up before
+  this, run `pre-commit install` again to get the hook
 
 ### Changed
 

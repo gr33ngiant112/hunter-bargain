@@ -26,7 +26,7 @@ repos:
         types: [python]
         pass_filenames: false
       # CONTRIBUTING.md "Commit Messages": a type from its list, an optional (scope) and `!`, then
-      # ": " and the summary. Merge, revert, fixup! and squash! messages from git itself pass.
+      # ": " and the summary. Git's own merge, revert, fixup!, squash! and amend! messages pass.
       # CI runs this hook on every commit a pull request adds.
       - id: commit-message
         name: commit message

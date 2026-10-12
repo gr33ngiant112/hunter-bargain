@@ -95,6 +95,41 @@ jobs:
       - name: Scan the full history with gitleaks
         run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact --verbose --log-opts="--diff-merges=first-parent HEAD" .'
 
+  # Every commit a pull request adds, merges aside, must pass the commit-message hook in
+  # .pre-commit-config.yaml (CONTRIBUTING.md "Commit Messages"). Pull requests only: a push has
+  # no pull request's commits to check.
+  commit-messages:
+    name: commit-messages
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the pull request's commits and its base
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+          activate-environment: true
+      - name: Install
+        run: uv sync --locked --extra dev
+      - name: Check each commit message
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          failed=0
+          for sha in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+            git log -1 --format=%B "$sha" > "$RUNNER_TEMP/message"
+            if ! pre-commit run commit-message --hook-stage commit-msg \
+                --commit-msg-filename "$RUNNER_TEMP/message"; then
+              echo "::error::$(git log -1 --format='%h %s' "$sha")"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
   dependency-scan:
     name: dependency-scan
     if: github.event.pull_request.draft == false
