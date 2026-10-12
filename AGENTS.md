@@ -16,6 +16,7 @@ FastAPI + SQLite price tracker: SerpAPI (Google and Bing Shopping) searches, a d
 - Do not call SerpAPI or send real email to check a change. Use tests with fakes and recorded, key-scrubbed fixtures; these are not "dummy data".
 - Do not add a dependency by guessing its name. Use `uv add`, and commit `uv.lock` with `pyproject.toml`.
 - Do not refactor code unrelated to the task.
+- Do not drop the assistant trailer from a commit: keep the tool's own (`Co-Authored-By:` in Claude Code). A tool that adds none, such as OpenCode, ends the message with `Assisted-by: <tool and model>`.
 
 ## Gotchas
 
