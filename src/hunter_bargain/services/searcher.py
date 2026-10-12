@@ -525,6 +525,9 @@ def _persist_results(results: list[SearchResult], item: Item, db: Session) -> li
             source=r.source,
             url=r.url,
             title=r.title,
+            merchant=r.merchant,
+            rating=r.rating,
+            reviews=r.reviews,
         )
         db.add(record)
         records.append(record)
@@ -696,6 +699,9 @@ def run_price_check(
         lowest_price=lowest.price if lowest else None,
         lowest_source=lowest.source if lowest else None,
         lowest_merchant=lowest.merchant if lowest else None,
+        lowest_rating=lowest.rating if lowest else None,
+        lowest_reviews=lowest.reviews if lowest else None,
+        lowest_multiple_sources=lowest.multiple_sources if lowest else False,
         lowest_url=lowest.url if lowest else None,
         results_count=len(relevant_results),
         records=[PriceRecordResponse.model_validate(r) for r in records],

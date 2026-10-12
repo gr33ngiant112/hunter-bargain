@@ -439,6 +439,43 @@ class TestAlertContent:
         assert ">Buy Now</a>" in html_part
         assert "Verify merchant" not in plain + html_part
 
+    @pytest.mark.parametrize(
+        ("details", "lines"),
+        [
+            (
+                {"rating": 4.6, "reviews": "13,000", "multiple_sources": True},
+                ["Rating: 4.6 out of 5 from 13,000 reviews", "Sellers: One of several sellers"],
+            ),
+            ({"rating": 5.0}, ["Rating: 5 out of 5"]),
+            ({"reviews": "5K+"}, ["Reviews: 5K+"]),
+            ({"multiple_sources": True}, ["Sellers: One of several sellers"]),
+            ({}, []),
+        ],
+        ids=["all", "rating", "reviews", "several-sellers", "none"],
+    )
+    def test_listing_details_follow_the_source(self, smtp_settings, smtp_classes, details, lines):
+        """#29: the item's rating and review count, and whether several sellers have it."""
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), **details)) is True
+
+        plain, html_part = _sent_parts(server)
+        expected = "".join(f"{line}\n" for line in lines)
+        assert f"Source: google_shopping\n{expected}Link: N/A\n" in plain
+        for line in lines:
+            label, value = line.split(": ")
+            assert f">{label}</td><td " in html_part
+            assert f">{value}</td></tr>" in html_part
+
+    def test_listing_details_are_escaped_in_the_html_part(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), reviews=MARKUP)) is True
+
+        _, html_part = _sent_parts(server)
+        assert f">{ESCAPED_MARKUP}</td>" in html_part
+        assert MARKUP not in html_part
+
     @pytest.mark.parametrize("line_break", ["\r\n", "\n", "\r", "\u2028"])
     def test_line_break_in_merchant_adds_no_line(self, smtp_settings, smtp_classes, line_break):
         """A merchant name cannot add a line, such as a second Link line, to the plain-text part."""

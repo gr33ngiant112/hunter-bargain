@@ -70,6 +70,12 @@ class PriceRecord(Base):
     url: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     checked_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # The listing's seller, the item's rating out of 5 and its review count as text, e.g.
+    # "13,000" or "5K+" (#29): None when the listing gives none, and for records saved before
+    # they were stored.
+    merchant: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reviews: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     item: Mapped[Item] = relationship(back_populates="price_records")
 

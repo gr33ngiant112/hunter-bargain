@@ -244,3 +244,41 @@ def test_check_leaves_out_a_denylisted_merchant_and_says_to_verify_a_price(
     assert send.call_args.kwargs["result"].merchant == "Corner Store"
     assert send.call_args.kwargs["verify_merchant"] is True
     assert db_session.query(PriceRecord).filter_by(item_id=item.id).count() == 4  # all saved
+
+
+def test_check_shows_the_listings_rating_and_its_records_keep_the_merchant(hb, db_session):
+    """#29: hb check reads lowest_rating, lowest_reviews and lowest_multiple_sources from the API,
+    and the price records keep each listing's merchant, rating and review count. The engine is a
+    fake patched into the searcher; the item has no target, so nothing alerts."""
+    engine = MagicMock()
+    engine.name = "fake_engine"
+    engine.search.return_value = [
+        SearchResult(
+            title="Widget",
+            price=9.99,
+            currency="USD",
+            source="fake_engine",
+            merchant="Walmart",
+            rating=4.6,
+            reviews="13,000",
+            multiple_sources=True,
+        ),
+        SearchResult(
+            title="Widget", price=12.0, currency="USD", source="fake_engine", merchant="Target"
+        ),
+    ]
+    hb("add", "Widget", "-e", EMAIL)
+    item = db_session.query(Item).one()
+
+    with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+        output = hb("check", str(item.id))
+
+    assert output.splitlines()[:2] == [
+        "  Widget: $9.99 (Walmart via fake_engine) — 2 result(s)",
+        "    rated 4.6/5 from 13,000 reviews, one of several sellers",
+    ]
+    records = db_session.query(PriceRecord).order_by(PriceRecord.price)
+    assert [(r.price, r.merchant, r.rating, r.reviews) for r in records] == [
+        (9.99, "Walmart", 4.6, "13,000"),
+        (12.0, "Target", None, None),
+    ]

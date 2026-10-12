@@ -1642,6 +1642,146 @@ class TestVerifyMerchant:
         assert (result.lowest_price, result.verify_merchant) == (None, False)
 
 
+# #29: each row's rating, review count and Google's multiple_sources.
+
+# The Coffee row 1 as https://serpapi.com/shopping-results shows it now (fetched 2026-10-12), with
+# the fields the engine has read since #29.
+GOOGLE_FOLGERS_RATED = {**GOOGLE_FOLGERS, "rating": 4.6, "reviews": 13000, "multiple_sources": True}
+# Bing Shopping, https://serpapi.com/bing-shopping-api (fetched 2026-10-12): the example row, whose
+# review count is a string, trimmed to the fields the engine reads. Its links are cut short, as
+# the page shows them.
+BING_KCUP = {
+    "link": (
+        "https://www.bing.com/ck/a?!&&p=bbf0d5c0JmltdHM9MTc2NzM5ODQwMA&ptn=3&ver=2&hsh=4&"
+        "fclid=30df5995-62..."
+    ),
+    "title": (
+        "The Original Donut Shop Single-Serve Coffee K-Cup, Medium Roast, Carton Of 48 ODFN744377"
+    ),
+    "seller": "OfficeSupply.com",
+    "price": "$30.08",
+    "extracted_price": 30.08,
+    "rating": 4.3,
+    "reviews": "5K+",
+    "external_link": (
+        "https://www.officesupply.com/cleaning-breakroom/food-beverage-supplies/foods-beverages/"
+        "coffee/ori..."
+    ),
+}
+
+
+def _details(result: SearchResult) -> tuple[float | None, str | None, bool]:
+    return result.rating, result.reviews, result.multiple_sources
+
+
+class TestListingDetails:
+    """Read through the real client from the local stub SerpAPI's rows."""
+
+    def test_google_rating_review_count_and_several_sellers(self, google_search):
+        _serve(google_search, GOOGLE_FOLGERS_RATED)
+
+        [result] = SerpApiShoppingEngine("google_shopping").search("coffee")
+
+        assert _details(result) == (4.6, "13,000", True)
+
+    def test_bing_review_count_is_its_string(self, bing_search):
+        _serve(bing_search, BING_KCUP)
+
+        [result] = SerpApiShoppingEngine("bing_shopping").search("coffee")
+
+        assert result.merchant == "OfficeSupply.com"
+        assert _details(result) == (4.3, "5K+", False)
+
+    def test_bing_rows_have_no_multiple_sources(self, bing_search):
+        _serve(bing_search, {**BING_KCUP, "multiple_sources": True})
+
+        [result] = SerpApiShoppingEngine("bing_shopping").search("coffee")
+
+        assert result.multiple_sources is False
+
+    def test_a_row_without_them_has_none(self, google_search):
+        _serve(google_search, GOOGLE_FOLGERS)
+
+        [result] = SerpApiShoppingEngine("google_shopping").search("coffee")
+
+        assert _details(result) == (None, None, False)
+
+    @pytest.mark.parametrize(
+        ("reviews", "expected"),
+        [("1.2K", "1.2K"), (" 350 ", "350"), ("12345", "12345"), (2500000, "2,500,000"), (0, "0")],
+    )
+    def test_review_counts(self, google_search, reviews, expected):
+        _serve(google_search, {**GOOGLE_FOLGERS_RATED, "reviews": reviews})
+
+        [result] = SerpApiShoppingEngine("google_shopping").search("coffee")
+
+        assert result.reviews == expected
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("rating", "4.6"),
+            ("rating", True),
+            ("rating", 6),
+            ("rating", -1),
+            ("rating", float("nan")),
+            ("reviews", "5K+ <b>more</b>"),
+            ("reviews", "lots"),
+            ("reviews", ""),
+            ("reviews", True),
+            ("reviews", -5),
+            ("reviews", 1.5),
+            ("reviews", "1" * 17),
+            ("multiple_sources", "true"),
+            ("multiple_sources", 1),
+        ],
+    )
+    def test_values_that_are_not_a_rating_count_or_true_are_left_out(
+        self, google_search, field, value
+    ):
+        """Third-party values that go into alert email and CLI output."""
+        _serve(google_search, {**GOOGLE_FOLGERS_RATED, field: value})
+
+        [result] = SerpApiShoppingEngine("google_shopping").search("coffee")
+
+        expected = {"rating": 4.6, "reviews": "13,000", "multiple_sources": True}
+        expected[field] = False if field == "multiple_sources" else None
+        assert dict(zip(expected, _details(result), strict=True)) == expected
+
+    def test_price_records_keep_the_listings_merchant_rating_and_reviews(
+        self, db_session, send_alert
+    ):
+        """And the check's result names the lowest listing's rating, reviews and sellers."""
+        engine = MagicMock()
+        engine.name = "mock"
+        engine.search.return_value = [
+            SearchResult(
+                title="Tracked Widget",
+                price=45.0,
+                currency="USD",
+                source="mock",
+                merchant="Walmart",
+                rating=4.6,
+                reviews="13,000",
+                multiple_sources=True,
+            )
+        ]
+        item = _tracked_item(db_session, "Tracked Widget", 50.0)
+
+        with patch("hunter_bargain.services.searcher._ENGINES", [engine]):
+            result = run_price_check(item=item, db=db_session)
+
+        record = db_session.query(PriceRecord).one()
+        assert (record.merchant, record.rating, record.reviews) == ("Walmart", 4.6, "13,000")
+        assert (result.records[0].merchant, result.records[0].reviews) == ("Walmart", "13,000")
+        assert (result.lowest_rating, result.lowest_reviews, result.lowest_multiple_sources) == (
+            4.6,
+            "13,000",
+            True,
+        )
+        assert send_alert.call_args.kwargs["result"].reviews == "13,000"
+
+
 # #33: run_price_check takes its engines and notifier as parameters, so these tests pass fakes
 # instead of patching the searcher's module globals.
 

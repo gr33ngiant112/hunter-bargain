@@ -76,6 +76,22 @@ def _print_lows(lows: list[tuple[str, dict[str, Any] | None]]) -> None:
             )
 
 
+def _listing_details(result: dict[str, Any]) -> str:
+    """The lowest listing's rating, review count and sellers, as far as it gives them (#29),
+    e.g. "rated 4.6/5 from 13,000 reviews, one of several sellers"."""
+    parts = []
+    rating, reviews = result.get("lowest_rating"), result.get("lowest_reviews")
+    if rating is not None:
+        parts.append(
+            f"rated {rating:g}/5" + (f" from {_clean(reviews)} reviews" if reviews else "")
+        )
+    elif reviews:
+        parts.append(f"{_clean(reviews)} reviews")
+    if result.get("lowest_multiple_sources"):
+        parts.append("one of several sellers")
+    return ", ".join(parts)
+
+
 def _print_item(item: dict[str, Any]) -> None:
     target = f"${item['target_price']:.2f}" if item.get("target_price") else "—"
     keywords = item.get("keywords") or "—"
@@ -300,6 +316,9 @@ def check(ctx: click.Context, item_id: int | None) -> None:
             click.echo(f"  {name}: ${lowest:.2f} ({source}) — {count} result(s)")
             if lowest_url:
                 click.echo(f"    -> {_clean(lowest_url)}")
+            details = _listing_details(result)
+            if details:
+                click.echo(f"    {details}")
             if result.get("verify_merchant"):
                 click.secho(
                     "    verify merchant: far below this check's other prices; check the seller",
