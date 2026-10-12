@@ -150,17 +150,16 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch):
         finally:
             pass
 
-    app.dependency_overrides[get_db] = _override_get_db
-
     with ExitStack() as stack:
+        # Cleared however the fixture ends, a failed startup included.
+        app.dependency_overrides[get_db] = _override_get_db
+        stack.callback(app.dependency_overrides.clear)
         stack.enter_context(patch("hunter_bargain.main.init_db"))
         stack.enter_context(patch("hunter_bargain.main.start_scheduler"))
         stack.enter_context(patch("hunter_bargain.main.stop_scheduler"))
         client = TestClient(app)
         stack.enter_context(client)
         yield client
-
-    app.dependency_overrides.clear()
 
 
 # A shopping_results row with fields both engines' documented rows have; a row needs a USD price
