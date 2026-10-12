@@ -510,7 +510,7 @@ class TestStatus:
 
         assert result.exit_code == 0
         assert result.output.startswith("Last price check of all items: failed\n")
-        assert result.output.endswith("An error ended the run: the app's log has the details.\n")
+        assert result.output.endswith("The run failed: the app's log has the details.\n")
 
     def test_status_of_a_run_whose_every_search_failed(self, runner: CliRunner):
         """Recorded as failed, though no error ended it: e.g. SerpAPI refused every search."""

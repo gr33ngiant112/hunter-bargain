@@ -193,11 +193,11 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 |--------|----------|-------------|
 | `GET` | `/runs` | The latest price checks of all items (the daily job's and `/prices/check-all`'s), newest first: `?limit=` (default 10, at most 100) |
 
-Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it, or every search it tried failed, e.g. with a revoked key or no SerpAPI searches left), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
+Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it, every item check it ran raised one, or every search it tried failed, e.g. with a revoked key or no SerpAPI searches left), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
 
 ### Health
 
-`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items is overdue; a check whose every search failed is not a success. Overdue means older than the longest gap between `PRICE_CHECK_CRON`'s next 10 run times plus 2 hours: 26 hours with the default daily schedule, 74 for weekdays only. Until a check has succeeded (a new database), the time counts from the app's start. After the app was down for longer than that, it answers 503 until the catch-up check, a minute after the start, succeeds: the last check really is that old. Docker Compose's healthcheck reads it.
+`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items is overdue; a failed check ([Runs](#runs)) is not a success. Overdue means older than the longest gap between `PRICE_CHECK_CRON`'s next 10 run times plus 2 hours: 26 hours with the default daily schedule, 74 for weekdays only. Until a check has succeeded (a new database), the time counts from the app's start. After the app was down for longer than that, it answers 503 until the catch-up check, a minute after the start, succeeds: the last check really is that old. Docker Compose's healthcheck reads it.
 
 ### Example: Create an item
 
@@ -334,8 +334,9 @@ docker compose up --build -d
   they stop
 - SerpAPI searches: after each check of all items, the app reads the account's searches left from
   SerpAPI's Account API, which costs no search. With fewer left than two checks of all items
-  make, it logs a warning and emails it to `ALERT_RECIPIENTS` (when SMTP is set up). The API key
-  and the account's email address in that answer are never logged, stored or returned
+  make, it logs a warning and emails it to `ALERT_RECIPIENTS` (when SMTP is set up), after every
+  check until the plan renews or more searches are bought. The API key and the account's email
+  address in that answer are never logged, stored or returned
 - SQLite data persisted via Docker volume (`app-data`)
 - The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
   `data-permissions` service gives the `app-data` volume to that user, so a volume from an

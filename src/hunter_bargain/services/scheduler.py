@@ -11,7 +11,7 @@ import logging
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -122,12 +122,14 @@ def _run_check_all() -> None:
 
 @dataclass
 class _RunCounts:
-    """What a check of all items did: the counts its check_runs row gets when it ends."""
+    """What a check of all items did: the counts its check_runs row gets when it ends, and the
+    item checks that raised an error, which only decide whether the run failed."""
 
     items_checked: int = 0
     searches_used: int = 0
     engine_errors: int = 0
     alerts_sent: int = 0
+    checks_failed: int = 0
 
     def add(self, result: PriceCheckResult) -> None:
         """Count one item's check that ran to the end."""
@@ -136,11 +138,27 @@ class _RunCounts:
         self.engine_errors += len(result.engine_errors)
         self.alerts_sent += int(result.alert_sent)
 
-    @property
-    def every_search_failed(self) -> bool:
-        """True if the run tried searches and none of them worked, e.g. with a revoked key, no
-        searches left or SerpAPI down: it checked nothing, so it is recorded as failed (#24)."""
-        return self.searches_used == 0 and self.engine_errors > 0
+    def recorded(self) -> dict[str, int]:
+        """The counts that check_runs records."""
+        return {
+            "items_checked": self.items_checked,
+            "searches_used": self.searches_used,
+            "engine_errors": self.engine_errors,
+            "alerts_sent": self.alerts_sent,
+        }
+
+    def failure(self) -> str | None:
+        """Why the run failed although no error ended it, or None if it succeeded (#24).
+
+        It failed if it checked nothing it set out to: every search it tried failed (a revoked
+        key, no searches left, SerpAPI down), or it had items and every check that ran raised an
+        error. An item deleted during the run is not a failed check.
+        """
+        if self.searches_used == 0 and self.engine_errors > 0:
+            return f"all {self.engine_errors} of its searches failed"
+        if self.items_checked == 0 and self.checks_failed > 0:
+            return f"each of its {self.checks_failed} item checks raised an error"
+        return None
 
 
 @contextmanager
@@ -148,8 +166,8 @@ def _recorded_run() -> Iterator[_RunCounts]:
     """Record the check of all items that runs in the block as a check_runs row.
 
     The row is committed as "running" before the block runs. When the block ends it gets its
-    finished_at, "succeeded" (or "failed" if an exception ended the block or every search it
-    tried failed) and the counts the block added to the _RunCounts it was given. A run the
+    finished_at, "succeeded" (or "failed" if an exception ended the block, or _RunCounts.failure
+    gives a reason) and the counts the block added to the _RunCounts it was given. A run the
     process does not live to finish stays "running", without counts. Each write uses a short
     session of its own.
     """
@@ -162,19 +180,17 @@ def _recorded_run() -> Iterator[_RunCounts]:
     status = "failed"
     try:
         yield counts
-        if counts.every_search_failed:
-            logger.error(
-                "Price check of all items failed: all %d of its searches failed",
-                counts.engine_errors,
-            )
-        else:
+        failure = counts.failure()
+        if failure is None:
             status = "succeeded"
+        else:
+            logger.error("Price check of all items failed: %s", failure)
     finally:
         with SessionLocal() as db:
             db.execute(
                 update(CheckRun)
                 .where(CheckRun.id == run_id)
-                .values(finished_at=_now(), status=status, **asdict(counts))
+                .values(finished_at=_now(), status=status, **counts.recorded())
             )
             db.commit()
 
@@ -196,28 +212,27 @@ def _check_all_items() -> None:
             logger.info("No items to check — skipping.")
 
         for item_id in item_ids:
-            result = _check_item(item_id)
-            if result is not None:
-                counts.add(result)
+            _check_item(item_id, counts)
     logger.info("Price check of all items complete.")
-    if not counts.every_search_failed:  # recorded as succeeded
+    if counts.failure() is None:  # recorded as succeeded
         send_heartbeat()
     check_searches_left(counts.searches_used + counts.engine_errors)
 
 
-def _check_item(item_id: int) -> PriceCheckResult | None:
-    """Check one item in a session of its own and return the result; None if the item is gone
-    or its check failed. A failure is logged, and closing the session at the end of the with
-    block rolls back whatever the failed check left uncommitted."""
+def _check_item(item_id: int, counts: _RunCounts) -> None:
+    """Check one item in a session of its own, and count its result or its failed check in
+    `counts`; an item deleted before its check is neither. A failure is logged, and closing the
+    session at the end of the with block rolls back whatever the failed check left uncommitted."""
     with SessionLocal() as db:
         try:
             item = db.get(Item, item_id)
         except Exception:
             logger.exception("Could not load item %d for its price check", item_id)
-            return None
+            counts.checks_failed += 1
+            return
         if item is None:
             logger.info("Item %d was deleted before its check — skipping.", item_id)
-            return None
+            return
         # Read now: after a failed commit the item's attributes can no longer be loaded.
         name = item.name
         try:
@@ -231,8 +246,9 @@ def _check_item(item_id: int) -> PriceCheckResult | None:
             )
         except Exception:
             logger.exception("Price check failed for item %d (%r)", item_id, name)
-            return None
-        return result
+            counts.checks_failed += 1
+            return
+        counts.add(result)
 
 
 def start_scheduler() -> None:

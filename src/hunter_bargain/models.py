@@ -89,8 +89,9 @@ class CheckRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     finished_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # "running" until the run ends, then "succeeded" or "failed": an error ended it, or every
-    # search it tried failed. A run the app did not live to finish stays "running".
+    # "running" until the run ends, then "succeeded" or "failed": an error ended it, every item
+    # check it ran raised one, or every search it tried failed. A run the app did not live to
+    # finish stays "running".
     status: Mapped[str] = mapped_column(String(20), default="running")
     # What the run did, recorded when it ends: the items whose check ran to the end, the engine
     # searches that worked and those that failed (an engine that could not search for an item,

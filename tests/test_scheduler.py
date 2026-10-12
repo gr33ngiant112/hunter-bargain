@@ -826,3 +826,87 @@ def test_longest_gap_across_a_daylight_saving_change_is_the_time_that_passes():
     gap = scheduler_module._longest_gap(trigger, _utc(28, 0))
 
     assert gap == dt.timedelta(hours=25)
+
+
+# #24: a run that had items, and in which every item check that ran raised an error, checked
+# nothing: it is recorded as failed. An item deleted during the run is not a failed check.
+
+LOADING_ITEMS_FAILS = OperationalError("SELECT items", {}, Exception("database is locked"))
+
+
+def _check_raises(item: Item, db: object) -> PriceCheckResult:
+    raise RuntimeError("database disk image is malformed")
+
+
+@both_entry_points
+def test_run_whose_every_item_check_raised_is_recorded_as_failed(
+    db_session, three_items, heartbeats, run_all, caplog
+):
+    with (
+        patch("hunter_bargain.services.scheduler.SessionLocal", _sessions(db_session)),
+        patch("hunter_bargain.services.scheduler.run_price_check", side_effect=_check_raises),
+        caplog.at_level(logging.ERROR, logger="hunter_bargain.services.scheduler"),
+    ):
+        run_all()
+
+    assert _statuses(db_session) == ["failed"]
+    assert _counts(db_session) == [(0, 0, 0, 0)]
+    assert "Price check of all items failed: each of its 3 item checks raised an error" in (
+        _messages(caplog, logging.ERROR)
+    )
+    assert heartbeats == []
+
+
+def test_run_whose_every_item_failed_to_load_is_recorded_as_failed(
+    db_session, three_items, monkeypatch
+):
+    """Loading an item is part of its check: a database error there is a failed check too."""
+    load = Session.get
+
+    def get(self, entity, ident, *args, **kwargs):
+        if entity is Item:
+            raise LOADING_ITEMS_FAILS
+        return load(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "get", get)
+
+    _run_job(db_session, _check_finds_nothing)
+
+    assert _statuses(db_session) == ["failed"]
+
+
+def test_run_whose_items_were_all_deleted_before_their_checks_succeeds(
+    db_session, three_items, heartbeats, monkeypatch
+):
+    """Every item was gone by its turn: nothing failed, so the run succeeded with nothing done."""
+    load = Session.get
+    monkeypatch.setattr(
+        Session,
+        "get",
+        lambda self, entity, ident, *a, **k: (
+            None if entity is Item else load(self, entity, ident, *a, **k)
+        ),
+    )
+
+    _run_job(db_session, _check_finds_nothing)
+
+    assert _statuses(db_session) == ["succeeded"]
+    assert _counts(db_session) == [(0, 0, 0, 0)]
+    assert len(heartbeats) == 1
+
+
+def test_one_check_that_raised_is_not_hidden_by_the_items_deleted_after_it(db_session, three_items):
+    """The first item's check deletes the other two items, then raises: the only check that
+    ran failed, so the run failed."""
+    first, second, third = three_items
+
+    def fake_check(item: Item, db: object) -> PriceCheckResult:
+        with _sessions(db_session)() as api_db:
+            for item_id in (second, third):
+                api_db.delete(api_db.get(Item, item_id))
+            api_db.commit()
+        raise RuntimeError("alert could not be sent")
+
+    _run_job(db_session, fake_check)
+
+    assert _statuses(db_session) == ["failed"]
