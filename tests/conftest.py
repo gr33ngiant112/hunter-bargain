@@ -2,6 +2,7 @@
 
 import ipaddress
 import json
+import logging
 import os
 import socket
 import threading
@@ -79,13 +80,17 @@ def _loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+def _default_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test starts from the default settings, whatever .env or the environment holds.
 
     The app's `settings` read .env and the environment once, when this file imported the app.
     This sets each of them back to its default and removes the environment's settings, so a
     `Settings(_env_file=None)` a test builds gets the defaults too. A test changes a setting
     with monkeypatch.
+
+    main.py also set the log levels from LOG_LEVEL then (configure_logging): the root logger
+    and urllib3 get the levels the default LOG_LEVEL gives them, and their own levels back after
+    the test.
     """
     names = Settings.model_fields
     for key in list(os.environ):
@@ -94,6 +99,15 @@ def _default_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     defaults = Settings(_env_file=None)
     for name in names:
         monkeypatch.setattr(settings, name, getattr(defaults, name))
+
+    root, urllib3 = logging.getLogger(), logging.getLogger("urllib3")
+    saved = root.level, urllib3.level
+    level = getattr(logging, defaults.log_level.upper())
+    root.setLevel(level)
+    urllib3.setLevel(max(level, logging.WARNING))
+    yield
+    root.setLevel(saved[0])
+    urllib3.setLevel(saved[1])
 
 
 @pytest.fixture

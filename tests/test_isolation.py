@@ -1,6 +1,7 @@
 """The tests run apart from the developer's setup (#20): conftest.py gives each test the default
 settings, whatever .env or the environment holds, and blocks connections to other machines."""
 
+import logging
 import os
 import socket
 import subprocess
@@ -20,12 +21,17 @@ EMAIL_FROM=bogus@example.com
 ALERT_RECIPIENTS=bogus@example.com
 SERPAPI_KEY=bogus-key
 """
-BOGUS_ENVIRONMENT = {"SMTP_PORT": "2525", "PRICE_CHECK_TZ": "Europe/Berlin", "LOG_LEVEL": "debug"}
+BOGUS_ENVIRONMENT = {"SMTP_PORT": "2525", "PRICE_CHECK_TZ": "Europe/Berlin", "LOG_LEVEL": "error"}
 
 
 def test_settings_are_the_defaults():
     """The next test runs this one where .env and the environment hold other values."""
-    assert settings.model_dump() == Settings(_env_file=None).model_dump()
+    defaults = Settings(_env_file=None)
+    assert settings.model_dump() == defaults.model_dump()
+    # The log levels main.py's configure_logging sets for the default LOG_LEVEL.
+    level = getattr(logging, defaults.log_level.upper())
+    assert logging.getLogger().level == level
+    assert logging.getLogger("urllib3").level == max(level, logging.WARNING)
 
 
 def test_a_local_env_file_and_environment_do_not_reach_the_tests(tmp_path):
