@@ -709,6 +709,17 @@ class TestApprise:
         assert "Sent through Apprise: 'Price Alert: Widget — $49.99'" in caplog.text
         _assert_no_part_of_the_apprise_url(caplog.text)
 
+    def test_verify_merchant_alert_says_so_in_the_message(self, apprise_settings, ntfy):
+        """#29's warning, for a price far below the check's others, is in the push message too."""
+        assert send_price_alert(item=_item(), result=_result(), verify_merchant=True) is True
+
+        [(_, _, body)] = ntfy.requests
+        assert body["message"].splitlines()[:2] == [
+            "Price Alert: Widget",
+            "Verify merchant: this price is more than 40% below the median of this check's"
+            " prices. Check the seller before you buy.",
+        ]
+
     def test_notice_is_published_to_the_topic(self, apprise_settings, ntfy, smtp_classes):
         assert send_notice("Searches running low", "12 left.") is True
 
