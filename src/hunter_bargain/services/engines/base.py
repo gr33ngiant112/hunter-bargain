@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 _USD_PRICE = re.compile(r"\$\d")
 
 # A plain dollar amount: "$", whole dollars with or without comma thousands separators, and at
-# most two decimals, e.g. "$1,299.00" or "$29.99". Comma decimals ("$1.299,00", "$12,99") and a
-# dot between thousands ("$1.299") do not match: read the US way, they are off by a factor of
-# 100 or 1000.
-_PLAIN_USD_AMOUNT = re.compile(r"\$((?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?)")
+# most two decimals, e.g. "$1,299.00" or "$29.99". Comma decimals ("$1.299,00", "$12,99",
+# "$0,299") and a dot between thousands ("$1.299") do not match: read the US way, they are off
+# by a factor of 100 or 1000.
+_PLAIN_USD_AMOUNT = re.compile(r"\$((?:[1-9][0-9]{0,2}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]{1,2})?)")
 
 # A payment-plan price ends with the payment period, e.g. "$20.99/mo".
 _INSTALLMENT_SUFFIXES = ("/mo", "/wk")

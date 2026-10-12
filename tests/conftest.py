@@ -5,7 +5,7 @@ import socket
 import threading
 from collections.abc import Iterator
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, override
 from unittest.mock import patch
@@ -93,13 +93,17 @@ WIDGET_ROW = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
 
 @dataclass
 class StubSerpApi:
-    """A local stand-in for serpapi.com: every search gets this status and body."""
+    """A local stand-in for serpapi.com: every search gets this status and body.
+
+    A search whose engine parameter (e.g. google_shopping) is a key of `bodies` gets that body.
+    """
 
     url: str
     queries: list[dict[str, list[str]]]
     status: int = 200
     body: str = json.dumps({"shopping_results": [WIDGET_ROW]})
     content_type: str = "application/json"
+    bodies: dict[str, str] = field(default_factory=dict)
 
 
 def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
@@ -133,8 +137,9 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
     class Handler(BaseHTTPRequestHandler):
         @override
         def do_GET(self) -> None:
-            stub.queries.append(parse_qs(urlsplit(self.path).query))
-            body = stub.body.encode()
+            query = parse_qs(urlsplit(self.path).query)
+            stub.queries.append(query)
+            body = stub.bodies.get(query.get("engine", [""])[0], stub.body).encode()
             self.send_response(stub.status)
             self.send_header("Content-Type", stub.content_type)
             self.send_header("Content-Length", str(len(body)))

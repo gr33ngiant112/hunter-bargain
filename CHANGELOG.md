@@ -111,8 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alert needs a lower price, or 7 days (`ALERT_COOLDOWN_DAYS`). A failed send is tried again at
   the next check, and a new `target_price` starts the item's alerts over.
 - A search result without SerpAPI's `extracted_price` is skipped unless its price is a plain
-  dollar amount such as "$1,299.00". A comma decimal was misread: "$1.299,00" as 1.299 dollars
-  and "$12,99" as 1,299 dollars.
+  dollar amount such as "$1,299.00". A comma decimal was misread: "$1.299,00" as 1.299 dollars,
+  "$12,99" as 1,299 dollars and "$0,299" as 299 dollars.
 
 ### Upgrading
 
