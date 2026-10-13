@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Upgrading: the first start of this version adds the merchant, the rating and the review count to
+`price_records`. Records saved before then have none, so with `MERCHANT_ALLOWLIST` set they are
+left out of the 90-day and all-time lows, like any listing that names no merchant.
+
 ### Added
 
 - `HEARTBEAT_URL`: a push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a
@@ -25,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prices, with at least 3 of them, is flagged `verify_merchant`: the alert email warns to check
   the seller, its button says "Verify merchant" instead of "Buy Now", and `hb check` prints a
   "verify merchant" line (#29).
+- The alert email and `hb check` show the listing's rating, its review count and "one of several
+  sellers" when SerpAPI gives them. Price records keep each listing's merchant, rating and review
+  count, and `GET /api/v1/items/{id}/prices` and a price check's result include them (#29).
+- `NOTIFIER=apprise` with `APPRISE_URL`: price alerts and notices go to a push service through
+  Apprise (ntfy, Gotify, Discord, Telegram and more) instead of email. `APPRISE_URL` can hold the
+  service's token, so it is never logged, and Apprise's own log is off. `NOTIFIER=apprise`
+  without `APPRISE_URL` stops the app at startup (#28).
 
 ### Changed
 
@@ -39,11 +50,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - One SerpAPI engine on httpx serves both engines. Searches no longer send Google Shopping's
   `num` or Bing Shopping's `count`, which SerpAPI ignores, and an engine error for a failed
   request names httpx's error type, e.g. `request failed (ConnectError)` (#22).
+- The 90-day and all-time lows (in alerts, `hb check` and `/stats`) leave out merchants that
+  `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` exclude (#29).
+- Without SMTP settings, a price alert is written to the log (item id, price, target and engine,
+  without the address) instead of being skipped, and again at the next check until SMTP is set
+  up (#28).
+- New dependency: apprise, which brings requests, urllib3, charset-normalizer, requests-oauthlib,
+  oauthlib and markdown into the lock (#28).
+- Importing the app no longer reads `.env` or the environment: the settings are read, and the
+  database engine made, on first use. The app reads them as it starts, so an invalid setting
+  stops it at startup with the same validation error, and the tests never read the checkout's
+  `.env` (#33).
+- `run_price_check` takes optional `engines` and `notify` parameters, which default to the
+  configured engines and the email alert (#33).
 
 ### Removed
 
-- The `google-search-results` dependency, and with it requests, urllib3 and charset-normalizer
-  (#22).
+- The `google-search-results` dependency (#22).
 
 ## [0.5.0] - 2026-10-12
 
