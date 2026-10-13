@@ -128,6 +128,11 @@ class PriceRecordResponse(BaseModel):
     url: str | None
     title: str | None
     checked_at: datetime
+    # The listing's seller, the item's rating out of 5 and its review count as text (#29); None
+    # when the listing gave none, and for records saved before they were stored.
+    merchant: str | None = None
+    rating: float | None = None
+    reviews: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -174,8 +179,13 @@ class PriceCheckResult(BaseModel):
     item_name: str
     lowest_price: float | None
     lowest_source: str | None
-    # Seller of the lowest-priced listing (Google Shopping source, Bing seller); not stored.
+    # Seller of the lowest-priced listing (Google Shopping source, Bing seller).
     lowest_merchant: str | None = None
+    # That listing's item rating out of 5 and review count (e.g. "13,000" or "5K+"), and whether
+    # more than one seller has the item (Google Shopping only), when the listing says (#29).
+    lowest_rating: float | None = None
+    lowest_reviews: str | None = None
+    lowest_multiple_sources: bool = False
     lowest_url: str | None
     results_count: int
     records: list[PriceRecordResponse]
@@ -189,6 +199,12 @@ class PriceCheckResult(BaseModel):
     # True when this check emailed an alert. False when no price met the target, when the last
     # alert already covers this price (no new low, cooldown not over: #9), or when sending failed.
     alert_sent: bool = False
+    # Results from merchants that MERCHANT_DENYLIST or MERCHANT_ALLOWLIST excludes (#29): saved
+    # and counted in results_count, but never the lowest price above or an alert.
+    merchant_excluded: int = 0
+    # The lowest price is more than VERIFY_MERCHANT_PCT percent below the median of this check's
+    # results (#29): too good to trust without checking the seller.
+    verify_merchant: bool = False
     # The item's lowest recorded prices, this check's included: in the last 90 days, and ever.
     low_90_days: PriceLow | None = None
     all_time_low: PriceLow | None = None

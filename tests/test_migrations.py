@@ -296,3 +296,23 @@ def test_runs_recorded_before_the_counts_keep_their_rows_with_the_counts_unknown
     command.downgrade(config, "08579e2a6e54")
     engine.dispose()
     assert _query(db_file, "SELECT * FROM check_runs") == [(1, *run)]
+
+
+def test_price_records_saved_before_merchants_were_stored_keep_none(tmp_path):
+    """#29: revision efe9c083afe9 adds each price record's merchant, rating and review count. A
+    record saved before it has none (NULL); a downgrade drops them and keeps the record."""
+    db_file = _legacy_database(tmp_path / "hb.db")
+    engine = _engine(db_file)
+    config = db.alembic_config(engine)
+    command.stamp(config, db.BASELINE_REVISION)
+    command.upgrade(config, "9124d0caa4e8")
+    rows_before = _rows(db_file, LEGACY_COLUMNS)["price_records"]
+
+    command.upgrade(config, "efe9c083afe9")
+    assert _query(db_file, "SELECT id, merchant, rating, reviews FROM price_records") == [
+        (record_id, None, None, None) for record_id in (1, 2, 3, 4)
+    ]
+
+    command.downgrade(config, "9124d0caa4e8")
+    engine.dispose()
+    assert _rows(db_file)["price_records"] == rows_before

@@ -15,13 +15,20 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-from serpapi import SerpApiClient
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from hunter_bargain import config
 from hunter_bargain.config import Settings, settings
 from hunter_bargain.db import Base, create_db_engine, get_db
+from hunter_bargain.logging_config import configure_logging
 from hunter_bargain.main import app
+from hunter_bargain.services.engines import base
+
+# The app sets up its logging as it starts (main.lifespan), and most tests never start it: set it
+# up once here, as the app would with the default LOG_LEVEL. That also installs the SerpAPI key
+# redaction that test_log_redaction.py checks.
+configure_logging(Settings.model_fields["log_level"].default)
 
 # notify_email values the API tests post. Item create/update return 422 for an address outside
 # ALERT_RECIPIENTS, so the client fixture allows exactly these.
@@ -83,31 +90,30 @@ def _loopback_only(monkeypatch: pytest.MonkeyPatch) -> None:
 def _default_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Every test starts from the default settings, whatever .env or the environment holds.
 
-    The app's `settings` read .env and the environment once, when this file imported the app.
-    This sets each of them back to its default and removes the environment's settings, so a
-    `Settings(_env_file=None)` a test builds gets the defaults too. A test changes a setting
-    with monkeypatch.
+    The app's `settings` come from get_settings(), which reads .env and the environment on first
+    use (#33). Here it gives each test the defaults instead, so no test reads .env. The
+    environment's settings are removed too, so a `Settings(_env_file=None)` a test builds gets
+    the defaults as well. A test changes a setting with monkeypatch.setattr(settings, ...).
 
-    main.py also set the log levels from LOG_LEVEL then (configure_logging): the root logger
-    and urllib3 get the levels the default LOG_LEVEL gives them, and their own levels back after
-    the test.
+    configure_logging, which the app runs as it starts, sets log levels from LOG_LEVEL: the root
+    logger and httpx get the levels the default LOG_LEVEL gives them, and their own levels back
+    after the test.
     """
     names = Settings.model_fields
     for key in list(os.environ):
         if key.lower() in names:
             monkeypatch.delenv(key)
     defaults = Settings(_env_file=None)
-    for name in names:
-        monkeypatch.setattr(settings, name, getattr(defaults, name))
+    monkeypatch.setattr(config, "get_settings", lambda: defaults)
 
-    root, urllib3 = logging.getLogger(), logging.getLogger("urllib3")
-    saved = root.level, urllib3.level
+    root, httpx = logging.getLogger(), logging.getLogger("httpx")
+    saved = root.level, httpx.level
     level = getattr(logging, defaults.log_level.upper())
     root.setLevel(level)
-    urllib3.setLevel(max(level, logging.WARNING))
+    httpx.setLevel(max(level, logging.WARNING))
     yield
     root.setLevel(saved[0])
-    urllib3.setLevel(saved[1])
+    httpx.setLevel(saved[1])
 
 
 @pytest.fixture
@@ -166,12 +172,39 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch):
 # string to count.
 WIDGET_ROW = {"title": "Widget", "price": "$9.99", "extracted_price": 9.99}
 
+# SerpAPI's Account API answer as https://serpapi.com/account-api documents it (fetched
+# 2026-10-12): the api_key and account_email are that page's placeholders. A real answer echoes
+# the caller's key and the account's email address.
+ACCOUNT_ANSWER = {
+    "account_id": "5ac54d6adefb2f1dba1663f5",
+    "api_key": "SECRET_API_KEY",
+    "account_email": "demo@serpapi.com",
+    "account_status": "Active",
+    "plan_id": "bigdata",
+    "plan_name": "Big Data Plan",
+    "plan_monthly_price": 250.0,
+    "plan_renewal_date": "2026-11-12",
+    "searches_per_month": 30000,
+    "plan_searches_left": 5958,
+    "extra_credits": 0,
+    "total_searches_left": 5958,
+    "this_month_usage": 24042,
+    "this_hour_searches": 87,
+    "last_hour_searches": 42,
+    "account_rate_limit_per_hour": 6000,
+}
+
 
 @dataclass
 class StubSerpApi:
     """A local stand-in for serpapi.com: every search gets this status and body.
 
     A search whose engine parameter (e.g. google_shopping) is a key of `bodies` gets that body.
+    A request to a path in `paths` gets that path's status and body instead: by default, the
+    Account API (/account.json) answers with ACCOUNT_ANSWER. `requested` lists each request's
+    path, and `queries` its query parameters. With a `barrier`, each request waits there before
+    it is answered: with Barrier(2), neither of two searches is answered until both have arrived.
+    A broken barrier closes the connection.
     """
 
     url: str
@@ -180,11 +213,16 @@ class StubSerpApi:
     body: str = json.dumps({"shopping_results": [WIDGET_ROW]})
     content_type: str = "application/json"
     bodies: dict[str, str] = field(default_factory=dict)
+    paths: dict[str, tuple[int, str]] = field(
+        default_factory=lambda: {"/account.json": (200, json.dumps(ACCOUNT_ANSWER))}
+    )
+    requested: list[str] = field(default_factory=list)
+    barrier: threading.Barrier | None = None
 
 
 def _point_client_at(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
-    # SerpApiClient's subclasses (GoogleSearch, ...) read BACKEND from it too.
-    monkeypatch.setattr(SerpApiClient, "BACKEND", url)
+    """Send the engines' searches to the server at `url` instead of serpapi.com."""
+    monkeypatch.setattr(base, "SERPAPI_BASE_URL", url)
     monkeypatch.setenv("no_proxy", "127.0.0.1")
 
 
@@ -213,10 +251,18 @@ def stub_serpapi(monkeypatch: pytest.MonkeyPatch) -> Iterator[StubSerpApi]:
     class Handler(BaseHTTPRequestHandler):
         @override
         def do_GET(self) -> None:
-            query = parse_qs(urlsplit(self.path).query)
+            url = urlsplit(self.path)
+            query = parse_qs(url.query)
+            stub.requested.append(url.path)
             stub.queries.append(query)
-            body = stub.bodies.get(query.get("engine", [""])[0], stub.body).encode()
-            self.send_response(stub.status)
+            if stub.barrier is not None:
+                stub.barrier.wait()
+            if url.path in stub.paths:
+                status, text = stub.paths[url.path]
+            else:
+                status, text = stub.status, stub.bodies.get(query.get("engine", [""])[0], stub.body)
+            body = text.encode()
+            self.send_response(status)
             self.send_header("Content-Type", stub.content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

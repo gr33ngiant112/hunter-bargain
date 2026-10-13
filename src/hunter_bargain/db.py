@@ -1,5 +1,6 @@
 """Database engine and session setup (SQLAlchemy)."""
 
+import functools
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -38,8 +39,26 @@ def create_db_engine(url: str, **kwargs: Any) -> Engine:
     return new_engine
 
 
-engine = create_db_engine(settings.database_url)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+@functools.cache
+def get_engine() -> Engine:
+    """The app's engine for DATABASE_URL, created on first use: importing the package reads no
+    settings (#33)."""
+    return create_db_engine(settings.database_url)
+
+
+@functools.cache
+def _session_factory() -> sessionmaker[Session]:
+    return sessionmaker(bind=get_engine(), autocommit=False, autoflush=False)
+
+
+class _SessionLocal:
+    """SessionLocal(): a new session on the app's engine, which the first call creates."""
+
+    def __call__(self) -> Session:
+        return _session_factory()()
+
+
+SessionLocal = _SessionLocal()
 
 
 class Base(DeclarativeBase):
@@ -55,18 +74,19 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def alembic_config(bind: Engine = engine) -> Config:
-    """The Alembic config the app migrates with: the package's migrations, run on `bind`.
+def alembic_config(bind: Engine | None = None) -> Config:
+    """The Alembic config the app migrates with: the package's migrations, run on `bind` (by
+    default, the app's engine).
 
     Built in code, not read from alembic.ini, which the installed package does not have.
     """
     config = Config()
     config.set_main_option("script_location", str(_MIGRATIONS_DIR))
-    config.attributes["engine"] = bind  # read by migrations/env.py
+    config.attributes["engine"] = get_engine() if bind is None else bind  # read by env.py
     return config
 
 
-def init_db(bind: Engine = engine) -> None:
+def init_db(bind: Engine | None = None) -> None:
     """Migrate the database to the latest revision. Called once at application startup.
 
     A database from before migrations (create_all made its tables: items exists, alembic_version
@@ -79,6 +99,8 @@ def init_db(bind: Engine = engine) -> None:
     SQLite creates a missing database file but not its directory, and the default
     DATABASE_URL points into ./data, which a fresh clone does not have: create it first.
     """
+    if bind is None:
+        bind = get_engine()
     if bind.url.get_backend_name() == "sqlite" and bind.url.database:
         Path(bind.url.database).parent.mkdir(parents=True, exist_ok=True)
     config = alembic_config(bind)

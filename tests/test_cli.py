@@ -448,6 +448,110 @@ class TestCheck:
             "\n" in result.output
         )
 
+    def test_check_says_to_verify_a_price_far_below_the_others(self, runner: CliRunner):
+        """#29: verify_merchant, and the results whose merchants may not alert."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 45.0,
+            "lowest_source": "google_shopping",
+            "lowest_merchant": "Corner Store",
+            "lowest_url": "https://example.com/item-a",
+            "results_count": 4,
+            "records": [],
+            "merchant_excluded": 1,
+            "verify_merchant": True,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "  Item A: $45.00 (Corner Store via google_shopping) — 4 result(s)\n"
+            "    -> https://example.com/item-a\n"
+            "    verify merchant: far below this check's other prices; check the seller\n"
+            "    1 result(s) from excluded merchants left out\n"
+        )
+
+    def test_check_when_every_result_is_from_an_excluded_merchant(self, runner: CliRunner):
+        """Not "no results found": there were results, from merchants that may not alert."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": None,
+            "lowest_source": None,
+            "lowest_url": None,
+            "results_count": 2,
+            "records": [],
+            "merchant_excluded": 2,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert result.output == (
+            "  Item A: no prices from merchants that may alert\n"
+            "    2 result(s) from excluded merchants left out\n"
+        )
+
+    @pytest.mark.parametrize(
+        ("details", "line"),
+        [
+            (
+                {"lowest_rating": 4.6, "lowest_reviews": "13,000", "lowest_multiple_sources": True},
+                "    rated 4.6/5 from 13,000 reviews, one of several sellers\n",
+            ),
+            ({"lowest_rating": 4.5}, "    rated 4.5/5\n"),
+            ({"lowest_reviews": "5K+"}, "    5K+ reviews\n"),
+            ({"lowest_multiple_sources": True}, "    one of several sellers\n"),
+            ({}, ""),
+        ],
+        ids=["all", "rating", "reviews", "several-sellers", "none"],
+    )
+    def test_check_shows_the_listings_rating_reviews_and_sellers(
+        self, runner: CliRunner, details, line
+    ):
+        """#29: under the price, as far as the listing gives them."""
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 45.0,
+            "lowest_source": "google_shopping",
+            "lowest_merchant": "Walmart",
+            "lowest_url": None,
+            "results_count": 1,
+            "records": [],
+            **details,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"])
+
+        assert result.exit_code == 0
+        assert (
+            result.output == f"  Item A: $45.00 (Walmart via google_shopping) — 1 result(s)\n{line}"
+        )
+
+    def test_check_strips_control_characters_from_the_review_count(self, runner: CliRunner):
+        check_result = {
+            "item_id": 1,
+            "item_name": "Item A",
+            "lowest_price": 45.0,
+            "lowest_source": "google_shopping",
+            "lowest_url": None,
+            "results_count": 1,
+            "records": [],
+            "lowest_reviews": WITH_CONTROLS,
+        }
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, check_result)
+            result = runner.invoke(cli, ["check", "1"], color=True)
+
+        assert _control_characters(result.output) == set()
+        assert f"    {CLEANED} reviews\n" in result.output
+
     def test_check_not_found(self, runner: CliRunner):
         with patch("hunter_bargain.cli.httpx.request") as mock_req:
             mock_req.return_value = _mock_response(404, {"detail": "Not found"})
@@ -510,7 +614,22 @@ class TestStatus:
 
         assert result.exit_code == 0
         assert result.output.startswith("Last price check of all items: failed\n")
-        assert result.output.endswith("An error ended the run: the app's log has the details.\n")
+        assert result.output.endswith("The run failed: the app's log has the details.\n")
+
+    def test_status_of_a_run_whose_every_search_failed(self, runner: CliRunner):
+        """Recorded as failed, though no error ended it: e.g. SerpAPI refused every search."""
+        run = {**FINISHED_RUN, "status": "failed", "searches_used": 0, "engine_errors": 6}
+        with patch("hunter_bargain.cli.httpx.request") as mock_req:
+            mock_req.return_value = _mock_response(200, [run])
+            result = runner.invoke(cli, ["status"])
+
+        assert result.exit_code == 0
+        assert result.output.startswith("Last price check of all items: failed\n")
+        assert result.output.endswith(
+            "  Engine errors: 6\n"
+            "  Alerts sent:   1\n"
+            "Every search failed: the app's log, or 'hb check ITEM_ID', shows why.\n"
+        )
 
     def test_status_of_a_run_that_has_not_ended(self, runner: CliRunner):
         """A run's counts are recorded when it ends."""

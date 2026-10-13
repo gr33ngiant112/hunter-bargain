@@ -28,7 +28,7 @@ Think of it as a deal-hunting laptop that *actually* does useful work.
 
 - **Multi-engine search** — Queries Google Shopping and Bing Shopping simultaneously via [SerpAPI](https://serpapi.com/)
 - **Smart filtering** — Model-number and keyword matching, price floor detection, and accessory and second-hand filtering so you get the actual product, not a phone case, an older model or a refurbished one
-- **Email alerts** — Styled HTML emails with a "Buy Now" button when your target price is hit
+- **Email or push alerts** — Styled HTML emails with a "Buy Now" button when your target price is hit, or push notifications through [Apprise](https://github.com/caronc/apprise) (ntfy, Gotify, Discord, Telegram and more)
 - **Scheduled checks** — Automatic daily price checks via APScheduler (configurable cron)
 - **On-demand checks** — Trigger a price check anytime via API or CLI
 - **CLI tool (`hb`)** — Full item management from your terminal
@@ -111,7 +111,7 @@ Output:
 |---------|-------------|
 | 🔍 Multi-engine search | Google Shopping + Bing Shopping via SerpAPI |
 | 🧠 Relevance filtering | Model numbers must match (no older or look-alike models), keywords are required terms, word overlap for the rest of the name, accessory and second-hand listings (renewed, refurbished, used, open box) skipped, price floor detection, Google Shopping extensions metadata |
-| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS` |
+| 📧 Email alerts | HTML emails with styled "Buy Now" CTA button + plain text fallback. A deal is emailed once, then again only for a new low or after `ALERT_COOLDOWN_DAYS`. A price far below the check's other prices says "Verify merchant" instead, and merchants can be denied or allowed. Without SMTP settings, the alert is written to the log. `NOTIFIER=apprise` sends alerts as push notifications instead |
 | ⏰ Daily scheduler | APScheduler cron job (default: 9 AM UTC, configurable). A daily check missed while the app was down runs a minute after it starts |
 | ⚡ On-demand checks | Check one item or all items instantly |
 | 🖥️ CLI (`hb`) | `add`, `rm`, `ls`, `update`, `check`, `history`, `status` — full CRUD from your terminal |
@@ -177,8 +177,8 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 | `GET` | `/items/{id}` | Get a specific item |
 | `PATCH` | `/items/{id}` | Update an item |
 | `DELETE` | `/items/{id}` | Delete an item |
-| `GET` | `/items/{id}/prices` | The item's recorded prices, newest first. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
-| `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low |
+| `GET` | `/items/{id}/prices` | The item's recorded prices, newest first, each with its listing's `merchant`, `rating` and `reviews` when known. Query: `limit` (1-1000, default 100) and `since` (an ISO 8601 time; without a zone it is read as UTC) |
+| `GET` | `/items/{id}/stats` | The item's low and median price on each day (UTC) of the last `days` days (1-3650, default 90), its lowest price in that period and its all-time low. Each day's low and median are the raw history, every merchant's prices; the two lows leave out the merchants that `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` exclude |
 
 ### Price Checks
 
@@ -193,11 +193,11 @@ Full interactive documentation available at `http://localhost:8000/docs` (Swagge
 |--------|----------|-------------|
 | `GET` | `/runs` | The latest price checks of all items (the daily job's and `/prices/check-all`'s), newest first: `?limit=` (default 10, at most 100) |
 
-Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
+Each run has `started_at` and `finished_at` (UTC), a `status` of `running`, `succeeded` or `failed` (an error ended it, every item check it ran raised one, or every search it tried failed, e.g. with a revoked key or no SerpAPI searches left), and counts recorded when it ends: `items_checked`, `searches_used` (the engines' searches that worked), `engine_errors` (searches that failed, e.g. on a SerpAPI error response; the app's log has each one's text) and `alerts_sent`. The counts are `null` while the run lasts, for a run the app did not live to finish, and for runs recorded before they were. `hb status` shows the last run.
 
 ### Health
 
-`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items finished more than 26 hours ago. Until a check has succeeded (a new database), the 26 hours count from the app's start. After the app was down for more than a day, it answers 503 until the catch-up check, a minute after the start, succeeds. Docker Compose's healthcheck reads it.
+`GET /health` (outside `/api/v1`) answers `{"status":"ok"}` while the daily price check works. It answers 503, with the reason in `detail`, when the scheduler is not running, or when the last successful check of all items is overdue; a failed check ([Runs](#runs)) is not a success. Overdue means older than the longest gap between `PRICE_CHECK_CRON`'s next 10 run times plus 2 hours: 26 hours with the default daily schedule, 74 for weekdays only. Until a check has succeeded (a new database), the time counts from the app's start. After the app was down for longer than that, it answers 503 until the catch-up check, a minute after the start, succeeds: the last check really is that old. Docker Compose's healthcheck reads it.
 
 ### Example: Create an item
 
@@ -232,13 +232,20 @@ Response:
   "lowest_price": 2149.00,
   "lowest_source": "google_shopping",
   "lowest_merchant": "Best Buy",
+  "lowest_rating": 4.6,
+  "lowest_reviews": "13,000",
+  "lowest_multiple_sources": true,
   "lowest_url": "https://www.google.com/shopping/product/...",
   "results_count": 5,
   "records": [...],
   "engine_errors": [],
-  "searches_used": 2
+  "searches_used": 2,
+  "merchant_excluded": 0,
+  "verify_merchant": false
 }
 ```
+
+`lowest_*` and the alert come from the cheapest merchant that `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` let alert; `merchant_excluded` counts the results from the others, which are saved and counted in `results_count` all the same. The 90-day and all-time lows (`low_90_days`, `all_time_low`, and the stats' lows) leave those merchants out too. A price recorded before merchants were stored has none, so it counts as a listing that names no merchant: in the lows unless `MERCHANT_ALLOWLIST` is set. `lowest_rating` (out of 5), `lowest_reviews` (as the engine gives it: Google Shopping a number, here written "13,000", Bing Shopping a string such as "5K+") and `lowest_multiple_sources` (Google Shopping only: more than one seller has the item) describe that listing when it gives them; the alert email and `hb check` show them. `verify_merchant` is `true` when that price is more than `VERIFY_MERCHANT_PCT` percent below the median of the check's prices from merchants that may alert (with at least 3 of them): the alert then says "Verify merchant" instead of "Buy Now", and `hb check` prints a "verify merchant" line.
 
 `searches_used` counts the engines' searches that worked. `engine_errors` lists the engines that could not search, for example `"bing_shopping: HTTP 429, SerpAPI searches used up or hourly limit reached: Your account has run out of searches."`. Those engines' prices are missing from the result, so an empty result with errors does not mean that nothing was found. `hb check` prints each error under its item.
 
@@ -258,12 +265,11 @@ src/hunter_bargain/
 │   └── runs.py          # GET /api/v1/runs: each price check of all items
 └── services/
     ├── searcher.py      # Multi-engine orchestrator + relevance filtering
-    ├── notifier.py      # SMTP email alerts with HTML templates
+    ├── notifier.py      # Alerts by SMTP email (HTML templates) or Apprise push
     ├── scheduler.py     # APScheduler daily cron job
     └── engines/
         ├── base.py      # SearchEngine ABC + SearchResult dataclass
-        ├── google.py    # Google Shopping via SerpAPI
-        └── bing.py      # Bing Shopping via SerpAPI
+        └── serpapi_shopping.py  # Google + Bing Shopping via SerpAPI, a field map each
 ```
 
 ### How It Works
@@ -306,8 +312,14 @@ All configuration is via environment variables (`.env` file, or the file `HB_ENV
 | `ALERT_RECIPIENTS` | — | Comma-separated addresses that may receive alerts, e.g. `me@example.com,you@example.com` (case is ignored for plain ASCII addresses). Item create/update return 422 for any other `notify_email`; alerts for older items with other addresses are skipped and logged. Unset allows no address; an invalid entry stops the app at startup |
 | `ALERT_MIN_DROP_PCT` | `0` | How far below an item's last alert price, in percent, a new low must be to send another alert; `0` alerts on any lower price. At least 0 and less than 100 |
 | `ALERT_COOLDOWN_DAYS` | `7` | Days after an item's last alert before a price still on target is emailed again; `0` emails at every check. A new `target_price` starts the item's alerts over |
-| `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ` |
+| `MERCHANT_DENYLIST` | — | Comma-separated merchant names (a listing's seller), e.g. `Scam Shop,Too Good Deals`, whose prices never alert. Whole names, compared ignoring ASCII case and extra spaces; their listings are still saved. A name that contains a comma can't be listed |
+| `MERCHANT_ALLOWLIST` | — | Comma-separated merchant names: when set, only these merchants' prices alert, and a listing that names no merchant cannot. A merchant on both lists never alerts. Unset: every merchant not denied |
+| `VERIFY_MERCHANT_PCT` | `40` | The price an alert reports says "Verify merchant" instead of "Buy Now" when it is more than this percent below the median of the same check's prices from merchants that may alert (at least 3). Above 0 and below 100 |
+| `NOTIFIER` | `smtp` | Where price alerts and notices go. `smtp`: email, with the `SMTP_*` settings; while SMTP is not configured, a price alert is written to the log instead (one warning with the item id, price, target and engine, without the address) and tried again at the next check. `apprise`: the service `APPRISE_URL` names. Any other value stops the app at startup |
+| `APPRISE_URL` | — | For `NOTIFIER=apprise`: an [Apprise URL](https://github.com/caronc/apprise/wiki), e.g. `ntfy://ntfy.example.com/hunter-bargain` for an ntfy topic; `NOTIFIER=apprise` without it stops the app at startup. It can hold the service's token, so it is never logged, and Apprise's own log is off: a failed send is a warning without the URL ([Push notifications](#push-notifications)) |
+| `PRICE_CHECK_CRON` | `0 9 * * *` | Cron schedule for daily checks, in `PRICE_CHECK_TZ`. `/health` fails once a check is overdue by its schedule ([Health](#health)) |
 | `PRICE_CHECK_TZ` | `UTC` | IANA time zone for `PRICE_CHECK_CRON`, e.g. `America/New_York` |
+| `HEARTBEAT_URL` | — | A push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a 10-second timeout, after each price check of all items that succeeds; the monitor raises the alarm when it stops. Empty: off. The URL holds the monitor's token, so it is never logged: a failed ping is a warning with the HTTP status or error type only |
 | `APP_PORT` | `8000` | Docker Compose only: host port the API is published on (the container listens on 8000) |
 | `HB_BIND_ADDR` | `127.0.0.1` | Docker Compose only: host address the API port is published on. `0.0.0.0` or the host's LAN address makes the API reachable from your network; it has no authentication of its own |
 | `HB_ENV_FILE` | `.env` | Docker Compose only: the file whose settings the app gets. Point it at a file outside the checkout that holds the real credentials (see [Deployment](#deployment)). Compose reads it from the shell or the checkout's `.env` |
@@ -323,10 +335,20 @@ docker compose up --build -d
 
 - Settings: the app gets the file `HB_ENV_FILE` names, e.g. `~/.config/hunter-bargain/hb.env` (mode 600),
   set in the checkout's `.env` as in [Quick Start](#1-clone--configure). Keep real credentials only there:
-  the checkout's own `.env` is what pytest, uvicorn and coding agents in the checkout load.
+  the checkout's own `.env` is what uvicorn and coding agents that start the app in the checkout load (the tests don't read it).
 - Health check: `curl http://localhost:8000/health` answers 503, with the reason, when the scheduler
-  is not running or no price check of all items has succeeded in 26 hours ([Health](#health));
+  is not running or no price check of all items has succeeded in 26 hours (with the default daily
+  schedule; see [Health](#health));
   `hb status` shows the last check. The image's Docker `HEALTHCHECK` reads the same endpoint.
+- Alarms from outside the app: set `HEARTBEAT_URL` to a push monitor's URL (healthchecks.io, Uptime
+  Kuma), and it hears from the app after each successful check of all items, so it notices when
+  they stop
+- SerpAPI searches: after each check of all items, the app reads the account's searches left from
+  SerpAPI's Account API, which costs no search. With fewer left than two checks of all items
+  make, it logs a warning and sends it through the notifier (to `ALERT_RECIPIENTS` when SMTP is
+  set up, or with `NOTIFIER=apprise`), after every
+  check until the plan renews or more searches are bought. The API key and the account's email
+  address in that answer are never logged, stored or returned
 - SQLite data persisted via Docker volume (`app-data`)
 - The app runs as an unprivileged user, uid 10001. Before it starts, the one-off
   `data-permissions` service gives the `app-data` volume to that user, so a volume from an
@@ -375,6 +397,26 @@ docker compose --profile dev up -d mailpit # Mailpit alone, for uvicorn: set SMT
 ```
 
 If `.env` sets `HB_ENV_FILE`, the app gets the real settings instead; `HB_ENV_FILE=.env docker compose --profile dev up` overrides it.
+
+### Push notifications
+
+With `NOTIFIER=apprise`, alerts and notices go to the service `APPRISE_URL` names instead of
+email. To check that a notification arrives, here on a local ntfy server, send one with the app's
+own notifier and log setup (importing `hunter_bargain.main` sets up the log; it starts nothing):
+
+```bash
+docker run -d --name hb-ntfy -p 127.0.0.1:8090:80 binwiederhier/ntfy:v2 serve
+NOTIFIER=apprise APPRISE_URL=ntfy://127.0.0.1:8090/hunter-bargain-test python -c "import hunter_bargain.main
+from hunter_bargain.services.notifier import send_notice
+print(send_notice('hunter-bargain', 'It works.'))"
+# Prints True, and the topic now holds the message:
+python -c "import httpx; print(httpx.get('http://127.0.0.1:8090/hunter-bargain-test/json?poll=1').text)"
+docker rm -f hb-ntfy
+```
+
+A send that fails prints `False`, with a warning in the log that names neither the URL nor its
+token. Apprise's own log stays off because it quotes the URL; to see why a URL fails, run
+`apprise -vv -b "test" "<the URL>"` (Apprise's command line, in the venv).
 
 ## Development
 

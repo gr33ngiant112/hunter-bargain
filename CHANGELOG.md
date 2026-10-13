@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-13
+
+Upgrading from 0.5.0: the first start of this version adds the merchant, the rating and the review
+count to `price_records`. Records saved before then have none, so with `MERCHANT_ALLOWLIST` set they
+are left out of the 90-day and all-time lows, like any listing that names no merchant.
+
+### Added
+
+- `HEARTBEAT_URL`: a push monitor's URL (healthchecks.io, Uptime Kuma) that gets one GET, with a
+  10-second timeout, after each price check of all items that succeeds, so the monitor raises the
+  alarm when they stop. Empty, the default, is off. The URL is never logged (#24).
+- A warning when SerpAPI searches run low. After each check of all items, the app reads the
+  account's searches left from SerpAPI's Account API, which costs no search. With fewer left than
+  twice what the check made, it logs a warning and emails it to `ALERT_RECIPIENTS` when SMTP is
+  set up. The API key and the account's email address in that answer are never logged, stored
+  or returned (#24).
+- `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST`: comma-separated merchant names, compared ignoring
+  ASCII case and extra spaces. A denylisted merchant's price never alerts; with an allowlist,
+  only its merchants' prices do. Listings from other merchants are still saved, and
+  `merchant_excluded` in a price check's result counts them (#29).
+- A price more than `VERIFY_MERCHANT_PCT` (40) percent below the median of the same check's
+  prices, with at least 3 of them, is flagged `verify_merchant`: the alert email warns to check
+  the seller, its button says "Verify merchant" instead of "Buy Now", and `hb check` prints a
+  "verify merchant" line (#29).
+- The alert email and `hb check` show the listing's rating, its review count and "one of several
+  sellers" when SerpAPI gives them. Price records keep each listing's merchant, rating and review
+  count, and `GET /api/v1/items/{id}/prices` and a price check's result include them (#29).
+- `NOTIFIER=apprise` with `APPRISE_URL`: price alerts and notices go to a push service through
+  Apprise (ntfy, Gotify, Discord, Telegram and more) instead of email. `APPRISE_URL` can hold the
+  service's token, so it is never logged, and Apprise's own log is off. `NOTIFIER=apprise`
+  without `APPRISE_URL` stops the app at startup (#28).
+
+### Changed
+
+- A check of all items that checked nothing is recorded as failed: one whose every search failed
+  (a revoked key, no searches left, SerpAPI down), or one with items in which every item check
+  raised an error. `/health`, the heartbeat and the catch-up at the next start treat it as such;
+  an item deleted during the check is not a failure (#24).
+- `/health`'s limit follows `PRICE_CHECK_CRON`: the longest gap between its next 10 run times,
+  plus 2 hours (26 hours for the default daily schedule, 74 for weekdays only) (#24).
+- A price check searches Google Shopping and Bing Shopping at the same time, so it takes about as
+  long as the slower search; the results, engine errors and lowest price are as before (#22).
+- One SerpAPI engine on httpx serves both engines. Searches no longer send Google Shopping's
+  `num` or Bing Shopping's `count`, which SerpAPI ignores, and an engine error for a failed
+  request names httpx's error type, e.g. `request failed (ConnectError)` (#22).
+- The 90-day and all-time lows (in alerts, `hb check` and `/stats`) leave out merchants that
+  `MERCHANT_DENYLIST` and `MERCHANT_ALLOWLIST` exclude (#29).
+- Without SMTP settings, a price alert is written to the log (item id, price, target and engine,
+  without the address) instead of being skipped, and again at the next check until SMTP is set
+  up (#28).
+- New dependency: apprise, which brings requests, urllib3, charset-normalizer, requests-oauthlib,
+  oauthlib and markdown into the lock (#28).
+- Importing the app no longer reads `.env` or the environment: the settings are read, and the
+  database engine made, on first use. The app reads them as it starts, so an invalid setting
+  stops it at startup with the same validation error, and the tests never read the checkout's
+  `.env` (#33).
+- `run_price_check` takes optional `engines` and `notify` parameters, which default to the
+  configured engines and the email alert (#33).
+
+### Removed
+
+- The `google-search-results` dependency (#22).
+
 ## [0.5.0] - 2026-10-12
 
 Upgrading from 0.4.0: read these notes first.
@@ -290,6 +353,7 @@ docs read.
 - Comprehensive test suite (24 tests)
 - Environment-based configuration via pydantic-settings
 
-[Unreleased]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gr33ngiant112/hunter-bargain/releases/tag/v0.4.0

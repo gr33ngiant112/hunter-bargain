@@ -1,11 +1,12 @@
 """Logging setup for the app, including SerpAPI key redaction.
 
 SerpAPI takes its key as a URL query parameter, so request URLs carry it into
-urllib3's DEBUG records and into requests/urllib3 exception text. Redaction runs
-in the log record factory: each record, from any logger, is redacted when it is
-created and before any handler sees it. That covers the root handler set up here
-as well as handlers the app does not own (uvicorn's, pytest's caplog) or that are
-added later, which a ``logging.Filter`` on the root handler would miss.
+httpx's INFO record of each request and into exception text that quotes the URL
+(httpx's HTTPStatusError does). Redaction runs in the log record factory: each
+record, from any logger, is redacted when it is created and before any handler
+sees it. That covers the root handler set up here as well as handlers the app
+does not own (uvicorn's, pytest's caplog) or that are added later, which a
+``logging.Filter`` on the root handler would miss.
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ from typing import Any
 _API_KEY = re.compile(r"api_key=[^&\s'\"]+")
 _REDACTED = "api_key=***"
 _TRACEBACK_FORMATTER = logging.Formatter()
+# Above CRITICAL: a logger at this level passes no record on.
+_OFF = logging.CRITICAL + 1
 
 
 def _redact(text: str) -> str:
@@ -71,11 +74,18 @@ class _RedactingRecordFactory:
 
 
 def configure_logging(level_name: str) -> None:
-    """Log to stderr at *level_name* and keep the SerpAPI key out of every log record."""
+    """Log to stderr at *level_name*, and keep the SerpAPI key and APPRISE_URL out of the log."""
     level = getattr(logging, level_name.upper(), logging.INFO)
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    # urllib3 logs every request URL, key included, at DEBUG.
-    logging.getLogger("urllib3").setLevel(max(level, logging.WARNING))
+    # httpx logs every request URL at INFO: a SerpAPI URL holds the key, and HEARTBEAT_URL holds
+    # its monitor's token. httpcore, under httpx, logs at DEBUG.
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
+    # Apprise, and urllib3 under its requests, log APPRISE_URL or its parts at every level: the
+    # URL, an ntfy topic, a token in a request path or header. Their records are dropped; the
+    # notifier logs each Apprise send's outcome without them.
+    for name in ("apprise", "urllib3"):
+        logging.getLogger(name).setLevel(_OFF)
     factory = logging.getLogRecordFactory()
     if not isinstance(factory, _RedactingRecordFactory):
         logging.setLogRecordFactory(_RedactingRecordFactory(factory))

@@ -1,22 +1,33 @@
-"""Tests for the email notification service."""
+"""Tests for the notification service: email, the log when SMTP is not configured, and Apprise."""
 
+import base64
 import datetime as dt
+import json
 import logging
 import os
 import smtplib
 import ssl
 import subprocess
 import sys
-from dataclasses import replace
+import threading
+from collections.abc import Iterator
+from dataclasses import dataclass, field, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any, override
 from unittest.mock import MagicMock, patch
 
+import apprise
 import pytest
 from pydantic import SecretStr, ValidationError
+from test_startup import _start_app
 
-from hunter_bargain.config import Settings
+from hunter_bargain.config import Settings, settings
+from hunter_bargain.logging_config import configure_logging
+from hunter_bargain.models import Item
 from hunter_bargain.schemas import PriceLow
 from hunter_bargain.services.engines.base import SearchResult
-from hunter_bargain.services.notifier import send_price_alert
+from hunter_bargain.services.notifier import send_notice, send_price_alert
+from hunter_bargain.services.searcher import run_price_check
 
 FAKE_PASSWORD = "fake-pass-for-test"
 
@@ -255,6 +266,73 @@ class TestSendPriceAlert:
         assert "someone@example.net" not in caplog.text
 
 
+class TestSendNotice:
+    """A notice about the app itself (#24: SerpAPI searches running low) goes to every
+    ALERT_RECIPIENTS address, over the same SMTP path as the price alerts."""
+
+    def test_goes_to_every_alert_recipient_after_starttls_and_login(
+        self, smtp_settings, smtp_classes
+    ):
+        smtp_settings.alert_recipients = ["user@example.com", "ops@example.com"]
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        server = _server(smtp_cls)
+
+        assert send_notice("Searches running low", "12 left.") is True
+
+        assert [call[0] for call in server.method_calls] == ["starttls", "login", "send_message"]
+        _assert_verifying(server.starttls.call_args.kwargs.get("context"))
+        server.login.assert_called_once_with("bot@example.com", FAKE_PASSWORD)
+        message = server.send_message.call_args.args[0]
+        assert (message["Subject"], message["From"], message["To"]) == (
+            "Searches running low",
+            "bot@example.com",
+            "user@example.com, ops@example.com",
+        )
+        assert message.get_payload(decode=True).decode() == "12 left."
+        smtp_ssl_cls.assert_not_called()
+
+    def test_port_465_uses_implicit_tls(self, smtp_settings, smtp_classes):
+        smtp_settings.smtp_port = 465
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        server = _server(smtp_ssl_cls)
+
+        assert send_notice("Searches running low", "12 left.") is True
+
+        _assert_verifying(smtp_ssl_cls.call_args.kwargs["context"])
+        assert [call[0] for call in server.method_calls] == ["login", "send_message"]
+        smtp_cls.assert_not_called()
+
+    def test_skipped_without_smtp_credentials(self, smtp_settings, smtp_classes, caplog):
+        smtp_settings.smtp_password = SecretStr("")
+        smtp_cls, smtp_ssl_cls = smtp_classes
+
+        assert send_notice("Searches running low", "12 left.") is False
+
+        smtp_cls.assert_not_called()
+        smtp_ssl_cls.assert_not_called()
+        assert "SMTP not configured — skipping the email: Searches running low" in caplog.text
+
+    def test_skipped_without_alert_recipients(self, smtp_settings, smtp_classes, caplog):
+        smtp_settings.alert_recipients = []
+        smtp_cls, smtp_ssl_cls = smtp_classes
+
+        assert send_notice("Searches running low", "12 left.") is False
+
+        smtp_cls.assert_not_called()
+        assert "ALERT_RECIPIENTS is empty — skipping the email: Searches running low" in caplog.text
+
+    def test_failed_send_is_logged_not_raised(self, smtp_settings, smtp_classes, caplog):
+        smtp_cls, _ = smtp_classes
+        server = _server(smtp_cls)
+        server.login.side_effect = smtplib.SMTPAuthenticationError(535, b"5.7.8 Not accepted")
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_notice("Searches running low", "12 left.") is False
+
+        assert "Failed to send the email: Searches running low" in caplog.text
+        assert FAKE_PASSWORD not in caplog.text
+
+
 class TestAlertContent:
     """Item names come from API callers and the other values from third-party listings.
 
@@ -332,6 +410,84 @@ class TestAlertContent:
         assert "Target: $60.00\nSource: " in plain
         assert "Lowest in 90 days" not in html_part
         assert "All-time low" not in html_part
+
+    def test_price_to_verify_warns_and_asks_to_verify_the_merchant(
+        self, smtp_settings, smtp_classes
+    ):
+        """#29: a price far below the check's other prices: no "Buy Now"."""
+        server = _server(smtp_classes[0])
+        result = replace(_result(), url="https://example.com/widget")
+
+        assert send_price_alert(item=_item(), result=result, verify_merchant=True) is True
+
+        plain, html_part = _sent_parts(server)
+        warning = (
+            "Verify merchant: this price is more than 40% below the median of this check's"
+            " prices. Check the seller before you buy."
+        )
+        assert plain.startswith(f"Price Alert: Widget\n{warning}\nPrice: $49.99 USD\n")
+        escaped = warning.replace("'", "&#x27;")  # as html.escape writes it
+        assert f">{escaped}</p>" in html_part
+        assert ">Verify merchant</a>" in html_part
+        assert "Buy Now" not in html_part
+
+    def test_price_to_verify_warns_without_a_link_too(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=_result(), verify_merchant=True) is True
+
+        plain, html_part = _sent_parts(server)
+        assert "\nVerify merchant: this price is more than 40% below" in plain
+        assert "Link: N/A\n" in plain
+        assert ">Verify merchant: this price is more than 40% below" in html_part
+        assert "</a>" not in html_part
+
+    def test_other_prices_keep_buy_now(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+        result = replace(_result(), url="https://example.com/widget")
+
+        assert send_price_alert(item=_item(), result=result) is True
+
+        plain, html_part = _sent_parts(server)
+        assert ">Buy Now</a>" in html_part
+        assert "Verify merchant" not in plain + html_part
+
+    @pytest.mark.parametrize(
+        ("details", "lines"),
+        [
+            (
+                {"rating": 4.6, "reviews": "13,000", "multiple_sources": True},
+                ["Rating: 4.6 out of 5 from 13,000 reviews", "Sellers: One of several sellers"],
+            ),
+            ({"rating": 5.0}, ["Rating: 5 out of 5"]),
+            ({"reviews": "5K+"}, ["Reviews: 5K+"]),
+            ({"multiple_sources": True}, ["Sellers: One of several sellers"]),
+            ({}, []),
+        ],
+        ids=["all", "rating", "reviews", "several-sellers", "none"],
+    )
+    def test_listing_details_follow_the_source(self, smtp_settings, smtp_classes, details, lines):
+        """#29: the item's rating and review count, and whether several sellers have it."""
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), **details)) is True
+
+        plain, html_part = _sent_parts(server)
+        expected = "".join(f"{line}\n" for line in lines)
+        assert f"Source: google_shopping\n{expected}Link: N/A\n" in plain
+        for line in lines:
+            label, value = line.split(": ")
+            assert f">{label}</td><td " in html_part
+            assert f">{value}</td></tr>" in html_part
+
+    def test_listing_details_are_escaped_in_the_html_part(self, smtp_settings, smtp_classes):
+        server = _server(smtp_classes[0])
+
+        assert send_price_alert(item=_item(), result=replace(_result(), reviews=MARKUP)) is True
+
+        _, html_part = _sent_parts(server)
+        assert f">{ESCAPED_MARKUP}</td>" in html_part
+        assert MARKUP not in html_part
 
     @pytest.mark.parametrize("line_break", ["\r\n", "\n", "\r", "\u2028"])
     def test_line_break_in_merchant_adds_no_line(self, smtp_settings, smtp_classes, line_break):
@@ -420,16 +576,317 @@ class TestSmtpSettings:
             Settings(_env_file=None)
 
     def test_app_refuses_to_start_with_invalid_smtp_security(self, tmp_path):
-        """config.settings is built on import, so uvicorn cannot load the app with a bad value."""
-        result = subprocess.run(
-            [sys.executable, "-c", "import hunter_bargain.main"],
-            cwd=tmp_path,  # no .env file here
-            env={**os.environ, "SMTP_SECURITY": "starttls"},
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        """The app reads its settings as it starts, so it does not start with a bad value."""
+        result = _start_app(tmp_path, SMTP_SECURITY="starttls")  # no .env file in tmp_path
 
         assert result.returncode != 0
         assert "validation error for Settings" in result.stderr
         assert "smtp_security" in result.stderr
+
+
+# An APPRISE_URL's secret parts, for the local stand-in for ntfy: none may reach the log.
+NTFY_USER = "fake-ntfy-user"
+NTFY_PASSWORD = "fake-ntfy-password-for-tests"
+NTFY_TOPIC = "fake-ntfy-topic-for-tests"
+
+
+@dataclass
+class NtfyStub:
+    """A local stand-in for an ntfy server: it keeps each request and answers with `status`."""
+
+    port: int = 0
+    status: int = 200
+    # Each request's path, headers and JSON body.
+    requests: list[tuple[str, dict[str, str], dict[str, Any]]] = field(default_factory=list)
+
+    @property
+    def apprise_url(self) -> str:
+        """An APPRISE_URL for this server: Apprise's ntfy URL with a login and a topic."""
+        return f"ntfy://{NTFY_USER}:{NTFY_PASSWORD}@127.0.0.1:{self.port}/{NTFY_TOPIC}"
+
+
+@pytest.fixture
+def ntfy(monkeypatch: pytest.MonkeyPatch) -> Iterator[NtfyStub]:
+    """A local stand-in for ntfy, which Apprise publishes to with a POST of a JSON message."""
+    stub = NtfyStub()
+
+    class Handler(BaseHTTPRequestHandler):
+        @override
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            stub.requests.append((self.path, dict(self.headers.items()), json.loads(body)))
+            # ntfy answers with the message it published, or with its error object.
+            answer = {"id": "1", "event": "message"}
+            if stub.status != 200:
+                answer = {"code": stub.status * 100 + 1, "http": stub.status, "error": "failed"}
+            payload = json.dumps(answer).encode()
+            self.send_response(stub.status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        @override
+        def log_message(self, *args: Any) -> None:
+            """Stay quiet."""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    stub.port = server.server_port
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01})
+    thread.start()
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    try:
+        yield stub
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.fixture
+def apprise_settings(ntfy: NtfyStub) -> Iterator[Settings]:
+    """NOTIFIER=apprise with the stand-in's URL, and no SMTP settings or ALERT_RECIPIENTS."""
+    fake = Settings(_env_file=None, notifier="apprise", apprise_url=ntfy.apprise_url)
+    with patch("hunter_bargain.services.notifier.settings", fake):
+        yield fake
+
+
+def _assert_no_part_of_the_apprise_url(text: str) -> None:
+    """Neither the URL's login, password and topic nor Apprise's own log lines (which name the
+    ntfy server) are in `text`."""
+    for part in (NTFY_USER, NTFY_PASSWORD, NTFY_TOPIC, "ntfy"):
+        assert part not in text
+
+
+class TestWithoutSmtp:
+    """#28: while SMTP is not configured (the defaults), a price alert is written to the log
+    instead of being skipped, without the recipient's address, and no SMTP connection is made."""
+
+    def test_the_alert_is_logged_and_no_smtp_connection_is_made(self, smtp_classes, caplog):
+        smtp_cls, smtp_ssl_cls = smtp_classes
+        result = replace(_result(), merchant="Walmart")
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_price_alert(item=_item(), result=result) is False  # not emailed
+
+        smtp_cls.assert_not_called()
+        smtp_ssl_cls.assert_not_called()
+        [record] = caplog.records
+        assert record.levelno == logging.WARNING
+        assert record.getMessage() == (
+            "SMTP not configured — price alert for item 1 logged, not emailed:"
+            " price 49.99, target 60.0, source google_shopping"
+        )
+        assert "user@example.com" not in caplog.text
+
+    def test_a_check_that_meets_the_target_logs_the_alert(
+        self, db_session, stub_serpapi, smtp_classes, monkeypatch, caplog
+    ):
+        """The local stub SerpAPI finds the Widget at $9.99 on both engines; its target is $10."""
+        monkeypatch.setattr(settings, "serpapi_key", SecretStr("test-key"))
+        item = Item(name="Widget", notify_email="w@x.com", target_price=10.0)
+        db_session.add(item)
+        db_session.commit()
+
+        with caplog.at_level(logging.INFO):
+            result = run_price_check(item=item, db=db_session)
+
+        assert (result.lowest_price, result.alert_sent) == (9.99, False)
+        assert (item.last_alert_price, item.last_alerted_at) == (None, None)  # retried next check
+        assert all(cls.call_count == 0 for cls in smtp_classes)
+        assert (
+            f"SMTP not configured — price alert for item {item.id} logged, not emailed:"
+            " price 9.99, target 10.0, source google_shopping"
+        ) in [r.getMessage() for r in caplog.records]
+        assert "w@x.com" not in caplog.text
+
+
+class TestApprise:
+    """NOTIFIER=apprise: alerts and notices go to APPRISE_URL, here a local stand-in for ntfy."""
+
+    def test_price_alert_is_published_to_the_topic(
+        self, apprise_settings, ntfy, smtp_classes, caplog
+    ):
+        """SMTP settings and ALERT_RECIPIENTS do not matter: the alert goes to APPRISE_URL."""
+        item = _item()
+        item.notify_email = "someone@example.net"
+        result = replace(_result(), merchant="Walmart", url="https://example.com/widget")
+        low_90_days = PriceLow(
+            price=45.0,
+            currency="USD",
+            source="bing_shopping",
+            checked_at=dt.datetime(2026, 9, 1, 9, 0, tzinfo=dt.UTC),
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_price_alert(item=item, result=result, low_90_days=low_90_days) is True
+
+        [(path, headers, body)] = ntfy.requests
+        assert body == {
+            "topic": NTFY_TOPIC,
+            "title": "Price Alert: Widget — $49.99",
+            "message": (
+                "Price Alert: Widget\n"
+                "Price: $49.99 USD\n"
+                "Target: $60.00\n"
+                "Lowest in 90 days: $45.00 on 2026-09-01\n"
+                "Source: Walmart via google_shopping\n"
+                "Link: https://example.com/widget"
+            ),
+        }
+        login = base64.b64encode(f"{NTFY_USER}:{NTFY_PASSWORD}".encode()).decode()
+        assert (path, headers["Authorization"]) == ("/", f"Basic {login}")
+        assert all(cls.call_count == 0 for cls in smtp_classes)
+        assert "Sent through Apprise: 'Price Alert: Widget — $49.99'" in caplog.text
+        _assert_no_part_of_the_apprise_url(caplog.text)
+
+    def test_verify_merchant_alert_says_so_in_the_message(self, apprise_settings, ntfy):
+        """#29's warning, for a price far below the check's others, is in the push message too."""
+        assert send_price_alert(item=_item(), result=_result(), verify_merchant=True) is True
+
+        [(_, _, body)] = ntfy.requests
+        assert body["message"].splitlines()[:2] == [
+            "Price Alert: Widget",
+            "Verify merchant: this price is more than 40% below the median of this check's"
+            " prices. Check the seller before you buy.",
+        ]
+
+    def test_notice_is_published_to_the_topic(self, apprise_settings, ntfy, smtp_classes):
+        assert send_notice("Searches running low", "12 left.") is True
+
+        [(_, _, body)] = ntfy.requests
+        assert body == {"topic": NTFY_TOPIC, "title": "Searches running low", "message": "12 left."}
+        assert all(cls.call_count == 0 for cls in smtp_classes)
+
+    def test_refused_message_is_false_and_logged_without_the_url(
+        self, apprise_settings, ntfy, caplog
+    ):
+        ntfy.status = 500
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_price_alert(item=_item(), result=_result()) is False
+
+        assert len(ntfy.requests) == 1
+        assert "Apprise could not deliver: 'Price Alert: Widget — $49.99'" in caplog.text
+        _assert_no_part_of_the_apprise_url(caplog.text)
+
+    def test_unreachable_server_is_false_and_logged_without_the_url(
+        self, ntfy, monkeypatch, caplog
+    ):
+        url = ntfy.apprise_url.replace(f":{ntfy.port}/", ":1/")  # nothing listens on port 1
+        fake = Settings(_env_file=None, notifier="apprise", apprise_url=url)
+        monkeypatch.setattr("hunter_bargain.services.notifier.settings", fake)
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_notice("Searches running low", "12 left.") is False
+
+        assert "Apprise could not deliver: 'Searches running low'" in caplog.text
+        _assert_no_part_of_the_apprise_url(caplog.text)
+
+    def test_url_apprise_cannot_use_is_false_and_not_logged(self, monkeypatch, caplog):
+        url = f"nosuchservice://{NTFY_PASSWORD}@example.com/{NTFY_TOPIC}"
+        fake = Settings(_env_file=None, notifier="apprise", apprise_url=url)
+        monkeypatch.setattr("hunter_bargain.services.notifier.settings", fake)
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_notice("Searches running low", "12 left.") is False
+
+        assert (
+            "APPRISE_URL is not a URL Apprise can send to — not sent: 'Searches running low'"
+        ) in caplog.text
+        _assert_no_part_of_the_apprise_url(caplog.text)
+
+    def test_error_in_apprise_is_false_and_logged_by_type_only(
+        self, apprise_settings, ntfy, monkeypatch, caplog
+    ):
+        def fail(self: apprise.Apprise, *args: object, **kwargs: object) -> bool:
+            raise RuntimeError(f"failed: {ntfy.apprise_url}")
+
+        monkeypatch.setattr(apprise.Apprise, "notify", fail)
+
+        with caplog.at_level(logging.DEBUG):
+            assert send_notice("Searches running low", "12 left.") is False
+
+        assert "Apprise failed (RuntimeError) — not sent: 'Searches running low'" in caplog.text
+        _assert_no_part_of_the_apprise_url(caplog.text)
+
+    def test_apprise_and_urllib3_logs_are_dropped_whatever_log_level_is(self):
+        """Their records quote APPRISE_URL or its parts at every level, DEBUG to ERROR."""
+        names = ("apprise", "urllib3")
+        saved = {name: logging.getLogger(name).level for name in names}
+        try:
+            for name in names:
+                logging.getLogger(name).setLevel(logging.NOTSET)
+            configure_logging("debug")
+            assert all(not logging.getLogger(name).isEnabledFor(logging.CRITICAL) for name in names)
+        finally:
+            for name, level in saved.items():
+                logging.getLogger(name).setLevel(level)
+
+    def test_app_entry_point_keeps_the_apprise_url_out_of_the_log(self, ntfy, tmp_path):
+        """A fresh interpreter imports the app as uvicorn does, with LOG_LEVEL=debug, and sets up
+        logging as the app does when it starts: under pytest, configure_logging's basicConfig()
+        is a no-op; here the app's log goes to stderr."""
+        script = (
+            "import hunter_bargain.main\n"
+            "from hunter_bargain.config import settings\n"
+            "from hunter_bargain.logging_config import configure_logging\n"
+            "configure_logging(settings.log_level)\n"
+            "from hunter_bargain.services.notifier import send_notice\n"
+            "print(send_notice('Searches running low', '12 left.'))\n"
+        )
+        env = {
+            **os.environ,
+            "LOG_LEVEL": "debug",
+            "NOTIFIER": "apprise",
+            "APPRISE_URL": ntfy.apprise_url,
+            "no_proxy": "127.0.0.1",
+        }
+
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=tmp_path,  # no .env here
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "True\n"
+        assert len(ntfy.requests) == 1
+        assert "Sent through Apprise: 'Searches running low'" in proc.stderr
+        _assert_no_part_of_the_apprise_url(proc.stderr)
+
+
+class TestNotifierSettings:
+    """NOTIFIER selects smtp (the default) or apprise; APPRISE_URL is a secret."""
+
+    def test_notifier_defaults_to_smtp_without_an_apprise_url(self):
+        defaults = Settings(_env_file=None)
+        assert (defaults.notifier, defaults.apprise_url.get_secret_value()) == ("smtp", "")
+
+    def test_notifier_and_apprise_url_are_read_from_the_environment(self, monkeypatch):
+        monkeypatch.setenv("NOTIFIER", "apprise")
+        monkeypatch.setenv("APPRISE_URL", f"ntfy://127.0.0.1/{NTFY_TOPIC}")
+
+        loaded = Settings(_env_file=None)
+
+        assert loaded.notifier == "apprise"
+        assert loaded.apprise_url.get_secret_value() == f"ntfy://127.0.0.1/{NTFY_TOPIC}"
+        assert NTFY_TOPIC not in repr(loaded)
+        assert NTFY_TOPIC not in str(loaded)
+
+    def test_apprise_without_apprise_url_fails_validation(self, monkeypatch):
+        monkeypatch.setenv("NOTIFIER", "apprise")
+
+        with pytest.raises(ValidationError, match="NOTIFIER=apprise needs APPRISE_URL"):
+            Settings(_env_file=None)
+
+    @pytest.mark.parametrize("value", ["log", "ntfy", "email"])
+    def test_other_notifier_fails_validation(self, monkeypatch, value):
+        monkeypatch.setenv("NOTIFIER", value)
+
+        with pytest.raises(ValidationError, match="notifier"):
+            Settings(_env_file=None)

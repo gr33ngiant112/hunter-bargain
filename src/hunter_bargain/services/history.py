@@ -11,6 +11,7 @@ from collections import defaultdict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from hunter_bargain.config import settings
 from hunter_bargain.models import PriceRecord
 from hunter_bargain.schemas import DailyPrices, PriceLow
 
@@ -60,13 +61,19 @@ def daily_prices(db: Session, item_id: int, since: dt.datetime) -> list[DailyPri
 
 
 def lowest_price(db: Session, item_id: int, since: dt.datetime | None = None) -> PriceLow | None:
-    """The item's lowest recorded price, since `since` if given; on a tie, its latest time."""
-    query = select(PriceRecord).where(PriceRecord.item_id == item_id)
+    """The item's lowest recorded price, since `since` if given; on a tie, its latest time.
+
+    Only prices from merchants that may alert count, as for the alert itself (#29: settings.
+    merchant_may_alert, MERCHANT_DENYLIST and MERCHANT_ALLOWLIST). A record saved before
+    merchants were stored has none, so it counts as a listing that names no merchant: in the
+    lows unless MERCHANT_ALLOWLIST is set.
+    """
+    query = select(PriceRecord.id, PriceRecord.merchant).where(PriceRecord.item_id == item_id)
     if since is not None:
         query = query.where(PriceRecord.checked_at >= as_utc(since))
-    query = query.order_by(PriceRecord.price, PriceRecord.checked_at.desc()).limit(1)
-    record = db.scalars(query).first()
-    if record is None:
-        return None
-    low = PriceLow.model_validate(record)
-    return low.model_copy(update={"checked_at": as_utc(low.checked_at)})
+    query = query.order_by(PriceRecord.price, PriceRecord.checked_at.desc())
+    for record_id, merchant in db.execute(query):
+        if settings.merchant_may_alert(merchant):
+            low = PriceLow.model_validate(db.get(PriceRecord, record_id))
+            return low.model_copy(update={"checked_at": as_utc(low.checked_at)})
+    return None

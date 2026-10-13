@@ -24,15 +24,16 @@ from hunter_bargain.db import get_db, init_db
 from hunter_bargain.logging_config import configure_logging
 from hunter_bargain.services.scheduler import health_problem, start_scheduler, stop_scheduler
 
-# Configure logging; this also redacts the SerpAPI key from every log record.
-configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown hooks."""
-    # Startup
+    # Startup. Logging comes first: it also redacts the SerpAPI key from every log record, before
+    # any request or scheduled job runs. LOG_LEVEL is the first setting read, so an invalid
+    # setting stops the app here (#33: importing the app reads no settings).
+    configure_logging(settings.log_level)
     logger.info("Initializing database...")
     init_db()
     logger.info("Starting scheduler...")

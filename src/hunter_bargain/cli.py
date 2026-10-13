@@ -10,8 +10,9 @@ import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 
-# Seconds to wait for the server's answer. A single check searches two engines in turn, and the
-# server gives each SerpAPI request up to 20 s, so a slow but healthy check can take about 40 s.
+# Seconds to wait for the server's answer. A single check searches both engines at the same time,
+# and the server gives each SerpAPI request up to 20 s, so a slow but healthy check can take
+# about 20 s.
 DEFAULT_TIMEOUT = 60.0
 
 
@@ -73,6 +74,22 @@ def _print_lows(lows: list[tuple[str, dict[str, Any] | None]]) -> None:
                 f"    {label}: ${low['price']:.2f} on {_clean(low['checked_at'])[:10]}"
                 f" ({_clean(low['source'])})"
             )
+
+
+def _listing_details(result: dict[str, Any]) -> str:
+    """The lowest listing's rating, review count and sellers, as far as it gives them (#29),
+    e.g. "rated 4.6/5 from 13,000 reviews, one of several sellers"."""
+    parts = []
+    rating, reviews = result.get("lowest_rating"), result.get("lowest_reviews")
+    if rating is not None:
+        parts.append(
+            f"rated {rating:g}/5" + (f" from {_clean(reviews)} reviews" if reviews else "")
+        )
+    elif reviews:
+        parts.append(f"{_clean(reviews)} reviews")
+    if result.get("lowest_multiple_sources"):
+        parts.append("one of several sellers")
+    return ", ".join(parts)
 
 
 def _print_item(item: dict[str, Any]) -> None:
@@ -292,15 +309,29 @@ def check(ctx: click.Context, item_id: int | None) -> None:
             source = f"{merchant} via {source}"
         lowest_url = result.get("lowest_url")
         engine_errors = result.get("engine_errors") or []
+        # Results from merchants MERCHANT_DENYLIST or MERCHANT_ALLOWLIST leaves out (#29).
+        excluded = result.get("merchant_excluded") or 0
 
         if lowest is not None:
             click.echo(f"  {name}: ${lowest:.2f} ({source}) — {count} result(s)")
             if lowest_url:
                 click.echo(f"    -> {_clean(lowest_url)}")
+            details = _listing_details(result)
+            if details:
+                click.echo(f"    {details}")
+            if result.get("verify_merchant"):
+                click.secho(
+                    "    verify merchant: far below this check's other prices; check the seller",
+                    fg="yellow",
+                )
+        elif excluded:
+            click.secho(f"  {name}: no prices from merchants that may alert", fg="yellow")
         elif engine_errors:
             click.secho(f"  {name}: no prices, {len(engine_errors)} engine error(s)", fg="red")
         else:
             click.secho(f"  {name}: no results found", fg="yellow")
+        if excluded:
+            click.echo(f"    {excluded} result(s) from excluded merchants left out")
         _print_lows(
             [
                 ("lowest in 90 days", result.get("low_90_days")),
@@ -408,8 +439,10 @@ def status(ctx: click.Context) -> None:
         fg="red" if run["engine_errors"] else None,
     )
     click.echo(f"  Alerts sent:   {_count(run['alerts_sent'])}")
-    # The run keeps counts only: each engine error's text is in the app's log.
+    # The run keeps counts only: each error's text is in the app's log.
+    every_search_failed = bool(run["engine_errors"]) and not run["searches_used"]
     if run["engine_errors"]:
-        click.echo("Some searches failed: the app's log, or 'hb check ITEM_ID', shows why.")
-    if run["status"] == "failed":
-        click.echo("An error ended the run: the app's log has the details.")
+        searches = "Every search" if every_search_failed else "Some searches"
+        click.echo(f"{searches} failed: the app's log, or 'hb check ITEM_ID', shows why.")
+    if run["status"] == "failed" and not every_search_failed:
+        click.echo("The run failed: the app's log has the details.")
