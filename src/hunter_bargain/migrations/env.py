@@ -11,7 +11,7 @@ from alembic import context
 from sqlalchemy import Engine
 
 from hunter_bargain import models  # noqa: F401  (registers the tables on Base.metadata)
-from hunter_bargain.db import Base, engine
+from hunter_bargain.db import Base, get_engine
 
 config = context.config
 
@@ -23,7 +23,7 @@ if config.config_file_name is not None:
 
 def run_migrations_online() -> None:
     """Run the migrations on a connection of the given engine (default: the app's)."""
-    bind: Engine = config.attributes.get("engine", engine)
+    bind: Engine = config.attributes.get("engine") or get_engine()
     with bind.connect() as connection:
         is_sqlite = connection.dialect.name == "sqlite"
         if is_sqlite:

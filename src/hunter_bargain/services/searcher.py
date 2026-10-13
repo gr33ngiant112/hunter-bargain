@@ -11,6 +11,7 @@ import itertools
 import logging
 import re
 import statistics
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal
@@ -581,8 +582,17 @@ def _verify_merchant(price: float, results: list[SearchResult]) -> bool:
     return Decimal(str(price)) < median * (1 - below)
 
 
-def run_price_check(item: Item, db: Session) -> PriceCheckResult:
+def run_price_check(
+    item: Item,
+    db: Session,
+    *,
+    engines: Sequence[SearchEngine] | None = None,
+    notify: Callable[..., bool] | None = None,
+) -> PriceCheckResult:
     """Execute a price check across all engines for a single item.
+
+    `engines` default to the registry (_ENGINES) and `notify` to send_price_alert (#33): a caller
+    such as a test can pass its own instead.
 
     1. Build search query from item name + keywords.
     2. Query the registered engines at the same time, one thread each; an engine that cannot
@@ -600,9 +610,10 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
     query = _build_query(item)
     logger.info("Running price check for item %d: %r", item.id, query)
 
-    engines = list(_ENGINES)
+    engines = list(_ENGINES if engines is None else engines)
+    notify = send_price_alert if notify is None else notify
     # One thread per engine: a check takes as long as its slowest search, not the sum of them.
-    with ThreadPoolExecutor(max_workers=len(engines)) as pool:
+    with ThreadPoolExecutor(max_workers=max(len(engines), 1)) as pool:
         searches = [pool.submit(engine.search, query) for engine in engines]
 
     # Results and errors are taken in the registry's order, whichever search ended first, as
@@ -669,7 +680,7 @@ def run_price_check(item: Item, db: Session) -> PriceCheckResult:
                 item.last_alert_price,
                 lowest.price,
             )
-        elif send_price_alert(
+        elif notify(
             item=item,
             result=lowest,
             low_90_days=low_90_days,
