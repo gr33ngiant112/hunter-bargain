@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Upgrading: the first start of this version adds the merchant, the rating and the review count to
-`price_records`. Records saved before then have none, so with `MERCHANT_ALLOWLIST` set they are
-left out of the 90-day and all-time lows, like any listing that names no merchant.
+## [0.6.0] - 2026-10-13
+
+Upgrading from 0.5.0: the first start of this version adds the merchant, the rating and the review
+count to `price_records`. Records saved before then have none, so with `MERCHANT_ALLOWLIST` set they
+are left out of the 90-day and all-time lows, like any listing that names no merchant.
 
 ### Added
 
@@ -351,6 +353,7 @@ docs read.
 - Comprehensive test suite (24 tests)
 - Environment-based configuration via pydantic-settings
 
-[Unreleased]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/gr33ngiant112/hunter-bargain/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/gr33ngiant112/hunter-bargain/releases/tag/v0.4.0
